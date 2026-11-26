@@ -1,0 +1,66 @@
+{
+  "intentId": "22222222-2222-4222-8222-222222222222",
+  "messageHash": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+  "verdict": "WARN",
+  "findings": [
+    {
+      "ruleId": "RECIPIENT_NEW_ACCOUNT",
+      "severity": "WARN",
+      "title": "Recipient account has no prior on-chain state",
+      "summary": "The recipient account does not exist yet on Devnet. Verify the address carefully before signing.",
+      "evidence": {
+        "instructionIndex": 0,
+        "account": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        "expected": "existing account",
+        "actual": "uninitialized (0 lamports)"
+      }
+    },
+    {
+      "ruleId": "FEE_BREAKDOWN",
+      "severity": "INFO",
+      "title": "Transaction fee breakdown",
+      "summary": "Base network fee is 5000 lamports with 0 lamports priority fee.",
+      "evidence": {
+        "expected": "5000",
+        "actual": "5000",
+        "extra": {
+          "baseFeeLamports": "5000",
+          "priorityFeeLamports": "0"
+        }
+      }
+    }
+  ],
+  "decodedInstructions": [
+    {
+      "kind": "system.transfer",
+      "programId": "11111111111111111111111111111111",
+      "instructionIndex": 0,
+      "from": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+      "to": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      "lamports": "500000000"
+    }
+  ],
+  "simulation": {
+    "preSlot": 340123460,
+    "postSlot": 340123461,
+    "unitsConsumed": 150,
+    "deltas": [
+      {
+        "account": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+        "lamportsDelta": "-500005000"
+      },
+      {
+        "account": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        "lamportsDelta": "500000000"
+      }
+    ],
+    "logsSanitized": [
+      "Program 11111111111111111111111111111111 invoke [1]",
+      "Program 11111111111111111111111111111111 success"
+    ]
+  },
+  "feeLamports": "5000",
+  "checkedAtSlot": 340123461,
+  "generatedAt": 1764184961000,
+  "engineVersion": "0.1.0"
+}

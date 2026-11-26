@@ -1,0 +1,75 @@
+{
+  "intentId": "33333333-3333-4333-8333-333333333333",
+  "messageHash": "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+  "verdict": "BLOCK",
+  "findings": [
+    {
+      "ruleId": "EXTRA_TRANSFER",
+      "severity": "BLOCK",
+      "title": "Hidden extra transfer detected",
+      "summary": "Instruction #1 transfers an extra 4000000000 lamports to an unrequested account 5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1.",
+      "evidence": {
+        "instructionIndex": 1,
+        "account": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+        "expected": "0",
+        "actual": "4000000000"
+      }
+    },
+    {
+      "ruleId": "UNEXPECTED_BALANCE_CHANGE",
+      "severity": "BLOCK",
+      "title": "Unexpected balance change in simulation",
+      "summary": "The transaction would move 4500000000 lamports out of your wallet, but you asked to send 500000000 lamports.",
+      "evidence": {
+        "account": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+        "expected": "-500005000",
+        "actual": "-4500005000"
+      }
+    }
+  ],
+  "decodedInstructions": [
+    {
+      "kind": "system.transfer",
+      "programId": "11111111111111111111111111111111",
+      "instructionIndex": 0,
+      "from": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+      "to": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      "lamports": "500000000"
+    },
+    {
+      "kind": "system.transfer",
+      "programId": "11111111111111111111111111111111",
+      "instructionIndex": 1,
+      "from": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+      "to": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+      "lamports": "4000000000"
+    }
+  ],
+  "simulation": {
+    "preSlot": 340123470,
+    "postSlot": 340123471,
+    "unitsConsumed": 300,
+    "deltas": [
+      {
+        "account": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+        "lamportsDelta": "-4500005000"
+      },
+      {
+        "account": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        "lamportsDelta": "500000000"
+      },
+      {
+        "account": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+        "lamportsDelta": "4000000000"
+      }
+    ],
+    "logsSanitized": [
+      "Program 11111111111111111111111111111111 invoke [1]",
+      "Program 11111111111111111111111111111111 success"
+    ]
+  },
+  "feeLamports": "5000",
+  "checkedAtSlot": 340123471,
+  "generatedAt": 1764184962000,
+  "engineVersion": "0.1.0"
+}
