@@ -1,0 +1,8 @@
+{
+  "name": "@solguard/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@solana/web3.js": "^1.98.4", "@solguard/shared": "workspace:*", "zod": "^4.6.7" }
+}
