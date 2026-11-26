@@ -25,6 +25,17 @@ export const POST = agentHandlers({
 
 Add `transpilePackages: ["@solguard/agent", "@solguard/shared"]` to `next.config`.
 
+## Running the model
+
+`./scripts/local-llm.sh` serves Qwen3 4B (open-weight, Apache-2.0) on `127.0.0.1:8089` with llama.cpp
+(Linux x86_64, about 2.5 GB on first run, no API key). Set the `LLM_*` values from `.env.example`.
+
+On a Ryzen 7 8845HS (CPU only), looser phrasing took about 9-11 s; simple commands are instant.
+A hosted deployment cannot reach a model on your laptop: demo locally, or point `LLM_*` at a hosted
+OpenAI-compatible API.
+
+Live check: `npx tsx packages/agent/tests/llm-live.ts` with the `LLM_*` variables exported.
+
 ## What the model can do
 
 It gets the user's message and no tools. Its answer is accepted only if the recipient and amount

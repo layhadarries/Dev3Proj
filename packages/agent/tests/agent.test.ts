@@ -40,6 +40,11 @@ describe("parser", () => {
   it("uses the model for looser phrasing", async () => {
     expect(await parseTransfer(loose, says(transfer("0.5", bob)))).toMatchObject({ status: "ready", source: "llm" });
   });
+  it("accepts an equivalent spelling of the typed amount only", async () => {
+    const message = `please pay ${bob} the sum of .001 SOL`;
+    expect(await parseTransfer(message, says(transfer("0.001", bob)))).toMatchObject({ draft: { amountBaseUnits: "1000000" } });
+    expect((await parseTransfer(message, says(transfer("0.01", bob)))).status).toBe("needs_clarification");
+  });
   it("accepts fenced JSON after a thought block", async () => {
     const reply = `<thought>hmm</thought>\n\`\`\`json\n${JSON.stringify(transfer("0.5", bob))}\n\`\`\``;
     expect((await parseTransfer(loose, says(reply))).status).toBe("ready");
@@ -170,7 +175,7 @@ describe("model client", () => {
       }) as typeof fetch,
     });
     await expect(client.complete("s", "u")).rejects.toThrow(/^LLM request failed with HTTP 429$/);
-    expect(Object.keys(sent).sort()).toEqual(["messages", "model", "temperature"]);
+    expect(Object.keys(sent).sort()).toEqual(["max_tokens", "messages", "model", "temperature"]);
   });
   it("is disabled without full configuration", () => {
     expect(llmFromEnv({ LLM_MODEL: "m" })).toBeUndefined();

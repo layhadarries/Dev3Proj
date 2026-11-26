@@ -21,12 +21,14 @@ export function openAiCompatibleClient(options: OpenAiCompatibleOptions): LlmCli
         body: JSON.stringify({
           model: options.model,
           temperature: 0,
+          // The expected reply is one short JSON object.
+          max_tokens: 300,
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },
           ],
         }),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 20_000),
+        signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
       });
       // The response body is deliberately left out of the error: it can echo request data.
       if (!response.ok) throw new Error(`LLM request failed with HTTP ${response.status}`);

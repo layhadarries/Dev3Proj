@@ -96,8 +96,14 @@ export async function parseTransfer(message: string, llm?: LlmClient): Promise<P
   if (!output || output.action === "clarify") return clarify("Try the form: send 0.5 SOL to <address>.");
   if (output.action === "unsupported") return unsupported("Only a single SOL transfer is supported.");
   // Grounding: the model may only select values the user actually typed.
-  if (output.asset.toUpperCase() !== "SOL" || output.recipient !== addresses[0] || output.amount !== amount) {
+  if (
+    output.asset.toUpperCase() !== "SOL" ||
+    output.recipient !== addresses[0] ||
+    // Same exact value, so "0.5" may stand for ".5" or "0.50" but nothing else.
+    solToLamports(output.amount) !== solToLamports(amount)
+  ) {
     return clarify("I could not match that to your message. Try the form: send 0.5 SOL to <address>.");
   }
-  return finish(output.amount, output.recipient, "llm");
+  // Build the draft from the user's own text, not the model's.
+  return finish(amount!, addresses[0]!, "llm");
 }
