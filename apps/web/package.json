@@ -13,6 +13,7 @@
   "dependencies": {
     "@solana/web3.js": "^1.98.0",
     "@solguard/agent": "workspace:*",
+    "@solguard/security": "workspace:*",
     "@solguard/shared": "workspace:*",
     "next": "^15.5.29",
     "react": "^19.1.0",
