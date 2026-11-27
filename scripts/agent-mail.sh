@@ -21,7 +21,8 @@ case $cmd in
   wait)
     : "${AGENT_MAIL_FROM:?set AGENT_MAIL_FROM to the GitHub logins to accept}"
     mkdir -p "$STATE"
-    cursor="$STATE/${REPO//\//_}-$issue"
+    # One cursor per sender list, so that different readers do not skip each other's mail.
+    cursor="$STATE/${REPO//\//_}-$issue-${AGENT_MAIL_FROM//[^A-Za-z0-9-]/_}"
     failures=0
     while true; do
       last=$(cat "$cursor" 2>/dev/null || echo 0)
@@ -33,7 +34,9 @@ case $cmd in
         failures=0
         if [ -n "$mail" ]; then
           printf '%s\n' "$mail"
-          jq -s 'map(.id) | max' <<<"$mail" >"$cursor"
+          # Rename into place so that an interruption cannot leave an empty cursor.
+          jq -s 'map(.id) | max' <<<"$mail" >"$cursor.tmp"
+          mv "$cursor.tmp" "$cursor"
           exit 0
         fi
       else

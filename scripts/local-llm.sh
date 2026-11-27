@@ -21,7 +21,11 @@ fetch() {
 
 mkdir -p "$DIR/bin" "$DIR/models"
 fetch "https://github.com/ggml-org/llama.cpp/releases/download/$BUILD/llama-$BUILD-bin-ubuntu-x64.tar.gz" "$ARCHIVE_SHA" "$DIR/llama.tar.gz"
-[ -x "$DIR/bin/llama-$BUILD/llama-server" ] || tar -xzf "$DIR/llama.tar.gz" -C "$DIR/bin"
+# The marker is written last, so a partial extraction is repeated.
+if [ ! -f "$DIR/bin/llama-$BUILD/.complete" ]; then
+  tar -xzf "$DIR/llama.tar.gz" -C "$DIR/bin"
+  touch "$DIR/bin/llama-$BUILD/.complete"
+fi
 fetch "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/$MODEL" "$MODEL_SHA" "$DIR/models/$MODEL"
 
 exec "$DIR/bin/llama-$BUILD/llama-server" -m "$DIR/models/$MODEL" --host 127.0.0.1 --port "$PORT" \
