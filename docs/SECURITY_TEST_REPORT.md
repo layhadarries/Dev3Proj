@@ -209,3 +209,59 @@ fallback identity; per-session, per-wallet and global limits remain layered
 alongside it. All counters are process-local, reset on restart and independent
 between instances. The checks were deterministic and mocked; no production
 ingress, live provider, or load/stress behavior was tested.
+
+## Bounded transaction broadcast
+
+### Test count and coverage
+
+The complete suite at the synchronized branch baseline was 272 tests:
+96 security, 93 agent and 83 web tests. The focused broadcast work added
+6 web tests, for 278 tests total after the change: 96 security, 93 agent and
+89 web tests.
+
+V8 coverage for the final synchronized implementation was:
+
+| Package | Statements | Branches | Functions | Lines |
+| --- | ---: | ---: | ---: | ---: |
+| Security engine | 92.03% | 88.95% | 96.07% | 93.84% |
+| AI agent | 99.31% | 97.97% | 100.00% | 99.15% |
+| Web application | 89.86% | 82.98% | 91.36% | 94.67% |
+
+The web broadcast and submission scope is covered by deterministic tests for:
+
+- successful broadcast and confirmed status;
+- a broadcast that never resolves;
+- a broadcast that resolves after the application deadline;
+- a broadcast that throws before returning a signature;
+- timeout reconciliation with confirmed, unknown and RPC-failure outcomes;
+- mismatched RPC signatures;
+- duplicate and concurrent submission attempts;
+- in-flight capacity release and replay protection;
+- late promise resolution/rejection without an automatic second broadcast.
+
+No real funds or live transaction were used. The tests use controlled
+promises, deterministic clocks or small injected deadlines, mocked signature
+statuses and mocked transports. They prove application control flow but do not
+prove the behavior of every Solana RPC endpoint or network schedule.
+
+### Transport limitation
+
+The installed `@solana/web3.js` `Connection.sendRawTransaction` API exposes no
+AbortSignal or request-cancellation handle. The application therefore applies
+a 10-second `Promise.race` deadline and reconciles by the signature derived
+from the exact verified signed bytes. A timeout cannot prove that the underlying
+RPC request was not accepted or that underlying network work stopped. Late
+promise resolution and rejection are observed, no second broadcast is issued,
+and the submission concurrency reservation is released through `finally`.
+
+### Verification
+
+Passed:
+
+- Combined `pnpm test`: 278 tests (96 security, 93 agent, 89 web).
+- V8 coverage for security, agent and web.
+- `pnpm lint`
+- `pnpm typecheck`
+- `pnpm build`
+- `pnpm audit --audit-level high`: exit 0; 4 moderate dependency findings and
+  no high-severity finding at the requested threshold.

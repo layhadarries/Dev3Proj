@@ -124,6 +124,16 @@ function deferredCall() {
   };
 }
 
+function deferredPromise<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function signIn(
   handlers: ReturnType<typeof createApplicationHandlers>,
   wallet = Keypair.generate(),
@@ -139,7 +149,7 @@ async function signIn(
 }
 
 async function submitPreparedTransaction(
-  options: Pick<ApplicationDependencies, "getSignatureStatus" | "now" | "sleep" | "submit">,
+  options: Pick<ApplicationDependencies, "getSignatureStatus" | "now" | "sleep" | "submit" | "broadcastTimeoutMs">,
 ) {
   return withSpendLimit("1000000000", async () => {
     const owner = Keypair.generate();
@@ -768,6 +778,167 @@ describe("confirmation authorization and abuse controls", () => {
     expect(result.submit).toHaveBeenCalledTimes(1);
     expect((await result.retry()).status).toBe(409);
     expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds a never-resolving broadcast, reconciles it, and never resubmits", async () => {
+    let time = 1_000;
+    const pending = new Promise<string>(() => undefined);
+    const getSignatureStatus = vi.fn(async () => null);
+    const result = await submitPreparedTransaction({
+      submit: vi.fn(async () => pending),
+      getSignatureStatus,
+      broadcastTimeoutMs: 5,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    });
+
+    expect(result.response.status).toBe(504);
+    expect((await result.response.json()).error).toMatch(/unconfirmed.*broadcast timed out.*Do not submit again/);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+    expect(getSignatureStatus).toHaveBeenCalledWith(
+      expectedSignature(result.submittedBytes ?? new Uint8Array()),
+    );
+  });
+
+  it("bounds a broadcast that resolves after the deadline and reconciles the derived signature", async () => {
+    const late = deferredPromise<string>();
+    let time = 1_000;
+    const getSignatureStatus = vi.fn(async () => null);
+    const resultPromise = submitPreparedTransaction({
+      submit: vi.fn(async () => late.promise),
+      getSignatureStatus,
+      broadcastTimeoutMs: 5,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    });
+
+    const result = await resultPromise;
+    expect(result.response.status).toBe(504);
+    late.resolve("late-signature");
+    await Promise.resolve();
+    expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles a timed-out broadcast successfully only after confirmed commitment", async () => {
+    let time = 1_000;
+    const getSignatureStatus = vi.fn(async (signature: string) => ({
+      slot: 123,
+      confirmations: 1,
+      err: null,
+      confirmationStatus: "confirmed" as const,
+      signature,
+    }));
+    const result = await submitPreparedTransaction({
+      submit: vi.fn(async () => new Promise<string>(() => undefined)),
+      getSignatureStatus,
+      broadcastTimeoutMs: 5,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    });
+
+    expect(result.response.status).toBe(200);
+    expect((await result.response.json()).signature).toBe(
+      getSignatureStatus.mock.calls[0]?.[0],
+    );
+    expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles RPC failure during timed-out broadcast reconciliation", async () => {
+    let time = 1_000;
+    const getSignatureStatus = vi.fn(async () => {
+      throw new Error("RPC unavailable");
+    });
+    const result = await submitPreparedTransaction({
+      submit: vi.fn(async () => new Promise<string>(() => undefined)),
+      getSignatureStatus,
+      broadcastTimeoutMs: 5,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    });
+
+    expect(result.response.status).toBe(504);
+    expect((await result.response.json()).error).toMatch(/Devnet RPC could not confirm.*Do not submit again/);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("contains a late broadcast promise rejection without resubmitting", async () => {
+    const late = deferredPromise<string>();
+    let time = 1_000;
+    const getSignatureStatus = vi.fn(async () => null);
+    const resultPromise = submitPreparedTransaction({
+      submit: vi.fn(async () => late.promise),
+      getSignatureStatus,
+      broadcastTimeoutMs: 5,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    });
+
+    const result = await resultPromise;
+    late.reject(new Error("late socket rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(result.response.status).toBe(504);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects concurrent submission attempts and releases capacity after a successful broadcast", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const owner = Keypair.generate();
+      const recipient = Keypair.generate().publicKey;
+      const entered = deferredPromise<void>();
+      const pending = deferredPromise<string>();
+      let submittedBytes = Buffer.alloc(0);
+      const submit = vi.fn(async (bytes: Uint8Array) => {
+        submittedBytes = Buffer.from(bytes);
+        entered.resolve();
+        return pending.promise;
+      });
+      const getSignatureStatus = vi.fn(async (signature: string) => ({
+        slot: 123,
+        confirmations: 1,
+        err: null,
+        confirmationStatus: "confirmed" as const,
+        signature,
+      }));
+      const app = handlers({
+        rpc: verificationRpc(8n),
+        blockhash: async () => ({
+          blockhash: Keypair.generate().publicKey.toBase58(),
+          lastValidBlockHeight: 123,
+        }),
+        submit,
+        getSignatureStatus,
+        broadcastTimeoutMs: 30_000,
+        inFlightLimiter: new InFlightLimiter(1),
+      });
+      const { cookie } = await signIn(app, owner);
+      const staged = await app.stage(request("stage", {
+        recipient: recipient.toBase58(),
+        amountBaseUnits: "8",
+      }, { cookie }));
+      const { id } = await staged.json();
+      await app.confirm(request("confirm", { id }, { cookie }));
+      const built = await app.build(request("build", { confirmationId: id }, { cookie }));
+      const { transaction } = await built.json();
+      const handoff = await app.handoff(request("handoff", { id }, { cookie }));
+      const { wire } = await handoff.json();
+      const signed = VersionedTransaction.deserialize(Buffer.from(wire, "base64"));
+      expect(Buffer.from(signed.message.serialize()).toString("base64")).toBe(transaction.messageBase64);
+      signed.sign([owner]);
+      const signedBase64 = Buffer.from(signed.serialize()).toString("base64");
+      const submitRequest = () => request("submit", { id, signed: signedBase64 }, { cookie });
+
+      const first = app.submit(submitRequest());
+      await entered.promise;
+      const concurrent = await app.submit(submitRequest());
+      expect(concurrent.status).toBe(429);
+
+      pending.resolve(expectedSignature(submittedBytes));
+      expect((await first).status).toBe(200);
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect((await app.submit(submitRequest())).status).toBe(409);
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("reconciles an ambiguous send exception through the derived signature and confirms success", async () => {

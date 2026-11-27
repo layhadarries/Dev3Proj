@@ -188,6 +188,21 @@ forwards only the exact signed bytes after `submitAndConfirm` verifies the
 signature and transaction. Do not configure this demo for mainnet or use
 funded wallets.
 
+The initial `sendRawTransaction` broadcast has a 10-second application-level
+deadline. The Solana `@solana/web3.js` `Connection.sendRawTransaction` API used
+here does not expose an AbortSignal or other request-cancellation handle.
+Application timeouts therefore cannot guarantee that an underlying HTTP/RPC
+request was never accepted or that it stopped after the deadline. A timed-out,
+thrown or mismatched broadcast is reconciled once against the signature derived
+from the exact verified signed bytes; the server never reconstructs or
+automatically resends the transaction. The reconciliation polling remains
+bounded to 30 seconds. RPC errors, reconciliation timeout, unknown status and
+signature mismatch are returned as uncertain 504 outcomes and instruct the
+client not to submit again. Only an on-chain status with confirmed/finalized
+commitment and no error is reported as success. Underlying RPC promises that
+resolve or reject after the application deadline are observed and handled
+without an automatic retry or resubmission.
+
 ## Low-level verification (diagnostics and standalone demo)
 
 These primitives are not a substitute for the gateway in application routes:

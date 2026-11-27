@@ -17,6 +17,7 @@ const APPROVED_MAX_SPEND_LAMPORTS = 1_000_000_000n;
 const DEFAULT_SPEND_LIMIT = APPROVED_MAX_SPEND_LAMPORTS.toString(10);
 const SIGNATURE_CONFIRMATION_TIMEOUT_MS = 30_000;
 const SIGNATURE_CONFIRMATION_POLL_MS = 500;
+const BROADCAST_TIMEOUT_MS = 10_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -28,6 +29,40 @@ type SignatureConfirmation =
 interface ConfirmedBroadcast {
   signature: string;
   confirmation: Extract<SignatureConfirmation, { outcome: "confirmed" }>;
+}
+
+type BroadcastResult =
+  | { outcome: "returned"; signature: string }
+  | { outcome: "thrown" }
+  | { outcome: "timeout" };
+
+async function broadcastWithDeadline(
+  submit: (signedBytes: Uint8Array) => Promise<string>,
+  snapshot: Uint8Array,
+  timeoutMs: number,
+): Promise<BroadcastResult> {
+  let broadcastPromise: Promise<string>;
+  try {
+    broadcastPromise = Promise.resolve(submit(snapshot));
+  } catch {
+    return { outcome: "thrown" };
+  }
+
+  void broadcastPromise.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      broadcastPromise.then(
+        (signature) => ({ outcome: "returned" as const, signature }),
+        () => ({ outcome: "thrown" as const }),
+      ),
+      new Promise<{ outcome: "timeout" }>((resolve) => {
+        timer = setTimeout(() => resolve({ outcome: "timeout" }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 async function confirmSignature(
@@ -189,6 +224,7 @@ export interface ApplicationDependencies {
   submit?: (signedBytes: Uint8Array) => Promise<string>;
   getSignatureStatus?: (signature: string) => Promise<SignatureStatus | null>;
   sleep?: (milliseconds: number) => Promise<void>;
+  broadcastTimeoutMs?: number;
 }
 
 function configuredSpendLimit(): bigint {
@@ -226,6 +262,10 @@ function routeError(error: unknown): Response {
 
 export function createApplicationHandlers(dependencies: ApplicationDependencies = {}) {
   const now = dependencies.now ?? Date.now;
+  const broadcastTimeoutMs = dependencies.broadcastTimeoutMs ?? BROADCAST_TIMEOUT_MS;
+  if (!Number.isSafeInteger(broadcastTimeoutMs) || broadcastTimeoutMs < 1 || broadcastTimeoutMs > 30_000) {
+    throw new RangeError("Broadcast timeout must be between 1 and 30000 milliseconds");
+  }
   const sessions = dependencies.sessions ?? new SessionStore(now);
   const limiter = dependencies.rateLimiter ?? new RateLimiter();
   const inFlight = dependencies.inFlightLimiter ?? new InFlightLimiter();
@@ -522,10 +562,8 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
           signed,
           async (snapshot) => {
             const expectedSignature = expectedTransactionSignature(snapshot);
-            let rpcSignature: string;
-            try {
-              rpcSignature = await submit(snapshot);
-            } catch {
+            const broadcast = await broadcastWithDeadline(submit, snapshot, broadcastTimeoutMs);
+            if (broadcast.outcome === "thrown" || broadcast.outcome === "timeout") {
               const confirmation = await confirmSignature(expectedSignature, getSignatureStatus, now, sleep);
               if (confirmation.outcome === "failed") {
                 throw new HttpError(502, `Transaction failed on Devnet (signature: ${expectedSignature})`);
@@ -533,7 +571,9 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
               if (confirmation.outcome === "unconfirmed") {
                 const reason = confirmation.reason === "rpc"
                   ? "the Devnet RPC could not confirm it"
-                  : "the confirmation timed out";
+                  : broadcast.outcome === "timeout"
+                    ? "the broadcast timed out"
+                    : "the confirmation timed out";
                 throw new HttpError(
                   504,
                   `Transaction is unconfirmed because ${reason} (signature: ${expectedSignature}). Do not submit again; check Devnet status.`,
@@ -541,6 +581,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
               }
               return { signature: expectedSignature, confirmation } satisfies ConfirmedBroadcast;
             }
+            const rpcSignature = broadcast.signature;
             if (rpcSignature !== expectedSignature) {
               throw new HttpError(
                 504,
