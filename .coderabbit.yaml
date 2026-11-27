@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: assertive
+  auto_review:
+    enabled: true
+    base_branches:
+      - main
+      - readme-only
+      - feat/devnet-transaction-firewall
+  path_instructions:
+    - path: "packages/security/**"
+      instructions: "Review message canonicalization, account privileges, integer arithmetic, same-slot simulation, complete RPC evidence, exact fee and intent binding, signer checks, one-time approvals, asynchronous races and adversarial coverage. Flag identifying evidence or secret material; never reproduce it in comments."
+    - path: ".github/workflows/**"
+      instructions: "Check token permissions, pinned actions, untrusted inputs, audit gates and secret exposure."

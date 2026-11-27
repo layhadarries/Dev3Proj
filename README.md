@@ -8,6 +8,10 @@ SolGuard is an intent-aware, pre-sign transaction firewall for Solana. You descr
 
 Built for the Zettabyte team at the Dev3pack Hackathon (27-29 November 2026). Devnet only.
 
+**Status on this branch:** the Node security library verifies legacy single-signer SOL transfers with optional compute-budget instructions. Live simulation, fee checks and the one-use wallet handoff are implemented. AI extraction, frontend confirmation, wallet UI, transaction submission and Explorer receipts are product integration goals, not services delivered by this branch. SPL, Token-2022, lookup tables and Anchor are unsupported.
+
+**Try it:** `pnpm install --frozen-lockfile && pnpm build && node packages/security/scripts/demo.mjs match`. No key or wallet connection is required. See the [team handoff](docs/SECURITY_API.md) for API contracts and [hardening notes](docs/SECURITY_REVIEW.md) for known risks.
+
 ---
 
 ## Table of contents
@@ -45,6 +49,8 @@ If the three do not agree, signing stays disabled.
 
 ## How it works
 
+Target product flow (including teammate-owned integration steps):
+
 ```mermaid
 flowchart LR
     A[1. Intent<br/>AI extracts recipient,<br/>asset, amount] --> B[2. Confirm<br/>User approves a<br/>structured intent card]
@@ -75,7 +81,7 @@ A hallucinating or prompt-injected model can at worst produce a bad intent. The 
 
 ## Features
 
-**MVP**
+**Product MVP targets** (see branch status above for implemented scope)
 - Plain-English SOL transfers
 - Structured intent confirmation card
 - Instruction decoding with a program allowlist (fail closed)
@@ -95,6 +101,8 @@ A hallucinating or prompt-injected model can at worst produce a bad intent. The 
 **Roadmap only**
 - Swaps (Devnet routes are unreliable), address reputation database, Anchor vault with on-chain policies, extraction of the verifier as an SDK
 ## Security rules
+
+The table includes reserved shared-contract rule IDs. This branch blocks token instructions and versioned messages generically; it does not diagnose token-specific risks or resolve lookup tables. Its only current warning is `RECIPIENT_NEW_ACCOUNT`.
 
 The engine's verdict is: any BLOCK finding means BLOCK, otherwise any WARN means WARN, otherwise PASS. Every finding carries machine-checkable evidence (instruction index, account, expected vs. actual).
 
@@ -130,6 +138,8 @@ The engine's verdict is: any BLOCK finding means BLOCK, otherwise any WARN means
 A warning is never proof of malicious intent. For example, many legitimate tokens have a freeze authority.
 
 ## Architecture and repo layout
+
+Planned team layout; not every directory or integration shown below exists on this branch.
 
 ```mermaid
 flowchart LR
@@ -173,13 +183,14 @@ solguard/
 
 ### Independence rule
 
-`packages/security` must **never** import from `packages/agent` or `apps/web`. It depends only on `packages/shared`. This is enforced by an ESLint import-boundary rule in CI, so "independent verification" is a guarantee and not a claim.
+`packages/security` must not import from `packages/agent` or `apps/web`. Its only workspace dependency is `packages/shared`.
 
 ### Public API of the security engine
 
 ```ts
 verify(intent, messageBytes, deps): Promise<SecurityReport>
-verifySigned(intent, signedTxBytes, { messageHash }, deps): Promise<SecurityReport>
+prepareWalletApproval(intent, messageBytes, originalReport, deps, acknowledgedWarning)
+verifySigned(intent, signedTxBytes, originalReport, deps): Promise<SecurityReport>
 hashMessage(messageBytes): string
 ```
 
@@ -200,11 +211,8 @@ Conventions:
 
 ### Prerequisites
 
-- Node.js 20+
-- pnpm
-- A Solana wallet (Phantom or Solflare) set to **Devnet**
-- A dedicated Devnet RPC endpoint (the public endpoint rate-limits)
-- Devnet SOL for test wallets (use a Devnet faucet)
+- Node.js 24 and pnpm 12.23.0 (CI versions)
+- Access to the public Devnet RPC for live tests; deterministic tests use fixtures
 ### Install
 
 ```bash
@@ -215,21 +223,16 @@ pnpm install
 
 ### Configure
 
-Create `.env.local` in `apps/web` (and export `SOLANA_RPC_URL` for package scripts):
-
-```bash
-SOLANA_RPC_URL=https://<your-devnet-rpc-endpoint>
-# LLM provider key for the agent package (never commit this)
-LLM_API_KEY=...
-```
+No environment variables are required for the firewall demo. Only `https://api.devnet.solana.com` is accepted. No LLM key is used.
 
 > **Never put a real wallet's private key anywhere in this project.** Fixtures and demos use throwaway Devnet keypairs only. SolGuard never requests, stores or uses private keys, and the AI can never sign.
 
 ### Run
 
 ```bash
-pnpm dev                       # start the web app
-pnpm --filter @solguard/security demo:cli <fixture>   # print a readable report for a fixture
+pnpm build
+node packages/security/scripts/demo.mjs match
+node packages/security/scripts/demo.mjs tamper
 ```
 
 ## Testing
@@ -239,11 +242,10 @@ pnpm -w lint
 pnpm -w typecheck
 pnpm test                                   # unit tests (Vitest)
 pnpm --filter @solguard/security test       # security package only
-pnpm --filter @solguard/security fixtures:build   # regenerate attack fixtures
-pnpm test:e2e                               # Playwright
+node --test packages/security/tests/integration/devnet.mjs  # separate live suite
 ```
 
-Test layers:
+Test strategy (including planned property and frontend E2E coverage):
 - **Unit**: every rule with positive and negative fixtures; schema rejection of floats, negatives and zero.
 - **Property** (fast-check): valid intents always verify PASS; any single-field semantic mutation never does.
 - **Adversarial**: RPC chaos (timeouts, 429s, malformed responses, slot regression), hostile strings in logs, boundary values.
@@ -254,6 +256,8 @@ Test layers:
 `packages/security/tests/fixtures/` holds serialized unsigned transactions, each paired with the intent it violates and the expected verdict and rule IDs. The same files power unit tests, the adversarial suite and the live demo. Examples: hidden extra transfer, wrong recipient, wrong amount, unknown program, authority change, durable nonce, excessive priority fee, extra signer, expired blockhash, garbage bytes.
 
 ## Demo scenarios
+
+These are product demo targets. The executable security demos simulate and check `match`, `extra`, `amount`, `recipient` and `tamper`; none submits a transaction.
 
 | # | Scenario | Expected result |
 |---|---|---|
@@ -269,7 +273,7 @@ The "malicious" builder is a clearly labeled test harness. All reports show real
 | Owner | Branch | Scope |
 |---|---|---|
 | **Megaguy32** | `feat/agent-core` | Natural-language parser, intent schema usage, unsigned transaction builder, restricted agent tools, plain-English explanations, agent tests |
-| **Taz** | `feat/solana-security` | RPC integration, instruction decoding, simulation, intent verification, security policies, transaction integrity, adversarial tests, CI and CodeRabbit |
+| **Taz** | `feat/devnet-transaction-firewall` | RPC integration, instruction decoding, simulation, intent verification, security policies, transaction integrity, adversarial tests, CI and CodeRabbit |
 | **Zulayha** | `feat/ui-and-deck` | React chat, wallet connection and signing flow, findings dashboard, receipts, demo recording, pitch deck |
 
 Integration rules:
@@ -297,7 +301,7 @@ SolGuard states its limits plainly:
 - **Scope of protection.** SolGuard protects transactions routed through it. It cannot protect against a transaction in a different dApp the user never sends through SolGuard.
 - **Spending limits are client-side policy,** not on-chain enforcement.
 - **Devnet only.** Token and liquidity realities differ on mainnet.
-See `docs/THREAT_MODEL.md` for the full adversary list and residual risks.
+See [security architecture](docs/SECURITY_ARCHITECTURE.md) and [security review](docs/SECURITY_REVIEW.md) for trust boundaries and residual risks.
 
 ## Contributing
 
@@ -306,7 +310,7 @@ See `docs/THREAT_MODEL.md` for the full adversary list and residual risks.
 3. Run lint, typecheck and tests before opening a PR.
 4. Complete the PR security checklist: fails closed? evidence attached? tests added? no new network IO outside `src/rpc`?
 5. `packages/security/` is owned by Taz; `packages/shared/` requires approval from all three owners (see `CODEOWNERS`).
-6. CodeRabbit reviews every PR to `main`, with extra scrutiny on the security package.
+6. CodeRabbit review requires the repository owner to install and enable its GitHub App.
 ## Security principles
 
 - Never request or store private keys or seed phrases.

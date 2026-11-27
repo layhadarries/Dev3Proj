@@ -1,0 +1,47 @@
+name: SOL firewall
+on:
+  push:
+    branches: [feat/devnet-transaction-firewall, main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - run: npm install --global pnpm@12.23.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build && pnpm typecheck && pnpm lint && pnpm test
+      - run: pnpm audit --audit-level high
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: go install github.com/zricethezav/gitleaks/v8@v8.24.3
+      - run: '"$(go env GOPATH)/bin/gitleaks" git --redact --no-banner'
+  devnet:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - run: npm install --global pnpm@12.23.0
+      - run: pnpm install --frozen-lockfile && pnpm build
+      - run: node --test packages/security/tests/integration/devnet.mjs

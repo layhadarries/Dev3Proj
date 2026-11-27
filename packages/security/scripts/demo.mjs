@@ -3,12 +3,14 @@ import { randomUUID } from "node:crypto";
 import process from "node:process";
 import console from "node:console";
 import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { serializeReport } from "@solguard/shared";
 import {
   getRecentBlockhash,
   prepareWalletApproval,
-  verify,
+  parseConfirmedSolIntent,
+  verifyUnsigned,
   verifySigned,
-} from "../dist/index.js";
+} from "@solguard/security";
 
 const [
   scenario = "match",
@@ -19,15 +21,15 @@ if (!["match", "extra", "amount", "recipient", "tamper"].includes(scenario))
   throw Error("Unknown scenario");
 const payer = new PublicKey(from),
   recipient = new PublicKey(to);
-const intent = {
+const intent = parseConfirmedSolIntent({
   id: randomUUID(),
   confirmedAt: Date.now(),
   kind: "transfer",
   asset: { type: "SOL" },
   payer: from,
   recipient: to,
-  amountBaseUnits: 500000000n,
-};
+  amountBaseUnits: "500000000",
+});
 const { blockhash } = await getRecentBlockhash();
 const tx = new Transaction({ feePayer: payer, recentBlockhash: blockhash });
 const transfer = SystemProgram.transfer({
@@ -39,7 +41,8 @@ tx.add(transfer);
 if (scenario === "extra") tx.add(transfer);
 const deps = { walletPublicKey: from, network: "devnet" };
 const message = tx.serializeMessage();
-let report = await verify(intent, message, deps);
+const unsigned = tx.serialize({requireAllSignatures:false, verifySignatures:false});
+let report = await verifyUnsigned(intent, unsigned, deps);
 if (["match", "tamper"].includes(scenario) && report.verdict === "PASS") {
   const wire = await prepareWalletApproval(intent, message, report, deps);
   if (scenario === "tamper") {
@@ -49,8 +52,8 @@ if (["match", "tamper"].includes(scenario) && report.verdict === "PASS") {
 }
 console.log(
   JSON.stringify(
-    { blockhash, report },
-    (_, v) => (typeof v === "bigint" ? String(v) : v),
+    { blockhash, report: serializeReport(report) },
+    null,
     2,
   ),
 );
