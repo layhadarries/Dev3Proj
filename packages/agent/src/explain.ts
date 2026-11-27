@@ -57,14 +57,10 @@ const RANK: Record<Severity, number> = { INFO: 0, WARN: 1, BLOCK: 2 };
  */
 export function explainReport(input: unknown): Explanation {
   const report = parseReport(input);
-  // The shared schema does not tie the verdict to the findings, so check it here.
+  // The shared schema ties the verdict to the findings, but not a severity to its rule.
   if (report.findings.some((f) => RANK[f.severity] < RANK[RULES[f.ruleId][0]])) {
     throw new Error("Finding severity is weaker than its rule");
   }
-  const has = (s: Severity) => report.findings.some((f) => f.severity === s);
-  const expected: Verdict = has("BLOCK") ? "BLOCK" : has("WARN") ? "WARN" : "PASS";
-  if (report.verdict !== expected) throw new Error("Verdict does not match the findings");
-  if (report.simulation === null && expected !== "BLOCK") throw new Error("Missing simulation must block");
   const signed = (n: bigint) => `${n < 0n ? "-" : "+"}${lamportsToSol(n < 0n ? -n : n)}`;
   return {
     verdict: report.verdict,

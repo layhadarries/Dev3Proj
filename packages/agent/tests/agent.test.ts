@@ -1,6 +1,6 @@
 import { Keypair, Message, SystemInstruction, Transaction } from "@solana/web3.js";
 import {
-  parseConfirmedSolIntent, prepareWalletApproval, verify, type RpcClient,
+  createConfirmationGateway, parseConfirmedSolIntent, prepareWalletApproval, verify, type RpcClient,
 } from "@solguard/security";
 import {
   parseIntent, serializeIntent, serializeReport, type Intent, type SecurityReportWire,
@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  agentHandlers, buildTransfer, confirmIntent, explainReport, lamportsToSol, llmFromEnv,
+  agentHandlers, buildTransfer, explainReport, lamportsToSol, llmFromEnv,
   openAiCompatibleClient, parseTransfer, solToLamports, type LlmClient,
 } from "../src/index.js";
 
@@ -21,6 +21,13 @@ const says = (output: unknown): LlmClient => ({
   complete: async () => (typeof output === "string" ? output : JSON.stringify(output)),
 });
 const transfer = (amount: string, recipient: string, asset = "SOL") => ({ action: "transfer", asset, amount, recipient });
+function confirmIntent(draft: { recipient: string; amountBaseUnits: string }, payer: string): Intent {
+  return {
+    id: globalThis.crypto.randomUUID(), kind: "transfer", asset: { type: "SOL" }, payer,
+    recipient: draft.recipient, amountBaseUnits: BigInt(draft.amountBaseUnits), confirmedAt: Date.now(),
+  };
+}
+const noGateway = () => { throw new Error("unused"); };
 const loose = `could you move 0.5 SOL over to ${bob} for me`;
 
 describe("amounts", () => {
@@ -122,10 +129,6 @@ describe("builder", () => {
     await expect(buildTransfer({ ...intent, recipient: alice }, rpc)).rejects.toThrow("differ");
     await expect(buildTransfer({ ...intent, extra: 1 } as never, rpc)).rejects.toThrow();
     await expect(buildTransfer({ ...intent, asset: { type: "SPL", mint: mallory } }, rpc)).rejects.toThrow("Only SOL");
-    expect(() => confirmIntent({ recipient: alice, amountBaseUnits: "1" }, alice)).toThrow();
-    for (const bad of ["0", "1.5", "-1", "abc", "01", "0x10", " 1", "18446744073709551616"]) {
-      expect(() => confirmIntent({ recipient: bob, amountBaseUnits: bad }, alice)).toThrow();
-    }
   });
   it("propagates RPC failure", async () => {
     await expect(buildTransfer(intent, { getLatestBlockhash: async () => { throw new Error("rpc"); } })).rejects.toThrow("rpc");
@@ -225,7 +228,7 @@ describe("reports and explanations", () => {
     expect(() => explainReport({ ...blocked, verdict: "PASS", findings: downgraded })).toThrow();
   });
   it("serves explanations over the handler", async () => {
-    const handlers = agentHandlers({ rpc: { getLatestBlockhash: async () => { throw new Error(); } } });
+    const handlers = agentHandlers({ rpc: { getLatestBlockhash: async () => { throw new Error(); } }, confirmations: noGateway });
     const send = (body: unknown) =>
       handlers.explain(new Request("http://localhost", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
     expect((await send(blocked)).status).toBe(200);
@@ -260,24 +263,91 @@ describe("trust boundary", () => {
 });
 
 describe("handlers", () => {
-  const handlers = agentHandlers({
-    rpc: { getLatestBlockhash: async () => { throw new Error("https://rpc.example/?key=SECRET"); } },
-  });
+  const blockhash = Keypair.generate().publicKey.toBase58();
+  const draft = { recipient: bob, amountBaseUnits: "500000000" };
   const post = (body: unknown, type = "application/json") =>
     new Request("http://localhost", { method: "POST", headers: { "content-type": type }, body: JSON.stringify(body) });
-  const draft = { recipient: bob, amountBaseUnits: "1" };
+
+  /** The real gateway over a fixture chain, wired the way an app route would wire it. */
+  function app(fail = false) {
+    const context = { slot: 100 };
+    const gateway = createConfirmationGateway({
+      rpc: {
+        identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
+        fresh: async () => ({ network: "devnet", commitment: "confirmed", blockhash, slot: 100n }),
+        fee: async () => ({ context, value: 5000n }),
+        simulate: async () => ({
+          context,
+          value: {
+            err: null, fee: 5000n, preBalances: [1_000_000_000n, 1_000_000n, 1n],
+            postBalances: [499_995_000n, 501_000_000n, 1n],
+            accounts: [499_995_000n, 501_000_000n].map((lamports) => ({
+              owner: "11111111111111111111111111111111" as const,
+              executable: false as const, lamports, data: ["", "base64"] as ["", "base64"],
+            })),
+            innerInstructions: [], preTokenBalances: [], postTokenBalances: [],
+            replacementBlockhash: null, logs: [], unitsConsumed: 150,
+          },
+        }),
+      },
+    });
+    const session = (id: string) => () => ({ sessionId: id, walletPublicKey: alice, network: "devnet" as const });
+    const handlers = agentHandlers({
+      rpc: {
+        getLatestBlockhash: async () => {
+          if (fail) throw new Error("https://rpc.example/?key=SECRET");
+          return { blockhash, lastValidBlockHeight: 100 };
+        },
+      },
+      confirmations: (request) => {
+        const resolve = session(request.headers.get("x-test-session") ?? "owner");
+        return {
+          intent: (id) => gateway.intent(resolve, id),
+          inspect: (id, built) => gateway.inspect(resolve, id, built),
+        };
+      },
+    });
+    return { gateway, handlers, owner: session("owner") };
+  }
 
   it("parses", async () => {
-    const response = await handlers.parse(post({ message: `send 1 SOL to ${bob}` }));
+    const response = await app().handlers.parse(post({ message: `send 1 SOL to ${bob}` }));
     expect(await response.json()).toMatchObject({ status: "ready" });
   });
-  it("refuses to build without confirmation or JSON", async () => {
-    expect((await handlers.build(post({ draft, payer: alice }))).status).toBe(400);
-    expect((await handlers.build(post({ draft, payer: alice, confirmed: true }, "text/plain"))).status).toBe(400);
-    expect((await handlers.build(post({ draft: { ...draft, amountBaseUnits: "abc" }, payer: alice, confirmed: true }))).status).toBe(400);
+  it("builds a confirmed intent once and returns the verified report", async () => {
+    const { gateway, handlers, owner } = app();
+    const { id } = gateway.stage(owner, draft);
+    gateway.confirm(owner, id);
+    const response = await handlers.build(post({ confirmationId: id }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.report).toMatchObject({ intentId: id, verdict: "PASS", messageHash: body.transaction.messageHash });
+    expect((await handlers.build(post({ confirmationId: id }))).status).toBe(409);
+    await expect(gateway.handoff(owner, id)).resolves.toBeInstanceOf(Buffer);
+  });
+  it("refuses to build before confirmation, for another session or for an unknown id", async () => {
+    const { gateway, handlers, owner } = app();
+    const { id } = gateway.stage(owner, draft);
+    expect((await handlers.build(post({ confirmationId: id }))).status).toBe(409);
+    gateway.confirm(owner, id);
+    const foreign = post({ confirmationId: id });
+    foreign.headers.set("x-test-session", "intruder");
+    expect((await handlers.build(foreign)).status).toBe(409);
+    expect((await handlers.build(post({ confirmationId: globalThis.crypto.randomUUID() }))).status).toBe(409);
+  });
+  it("accepts nothing but a confirmation id", async () => {
+    const { handlers } = app();
+    const confirmationId = globalThis.crypto.randomUUID();
+    for (const body of [{ confirmationId, confirmed: true }, { draft, payer: alice, confirmed: true }, { confirmationId: "x" }]) {
+      expect((await handlers.build(post(body))).status).toBe(400);
+    }
+    expect((await handlers.build(post({ confirmationId }, "text/plain"))).status).toBe(400);
   });
   it("hides internal errors", async () => {
-    const response = await handlers.build(post({ draft, payer: alice, confirmed: true }));
+    const { gateway, handlers, owner } = app(true);
+    const { id } = gateway.stage(owner, draft);
+    gateway.confirm(owner, id);
+    const response = await handlers.build(post({ confirmationId: id }));
     expect(response.status).toBe(502);
     expect(await response.text()).not.toContain("SECRET");
   });

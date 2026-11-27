@@ -11,6 +11,8 @@ import {
   prepareWalletApproval,
   verify,
   verifySigned,
+  createConfirmationGateway,
+  hashMessage,
 } from "../../src/index.js";
 // Ephemeral unit fixture only. Never funded or submitted.
 const signer = Keypair.generate();
@@ -72,6 +74,42 @@ function setup(initial = 2n) {
     deps: { rpc, walletPublicKey: String(p), network: "devnet" as const },
   };
 }
+it("gates the exact signed snapshot on authenticated confirmation and consumes it once", async () => {
+  const {rpc}=setup(), gate=createConfirmationGateway({rpc});
+  const session=()=>({sessionId:"fixture-a",walletPublicKey:String(p),network:"devnet" as const});
+  const draft={recipient:String(r),amountBaseUnits:"8"};
+  expect(()=>gate.stage(session,{...draft,confirmed:true})).toThrow();
+  const card=gate.stage(session,draft);
+  const built={intentId:card.id,messageBase64:msg.toString("base64"),messageHash:hashMessage(msg),
+    recentBlockhash:hash,lastValidBlockHeight:123};
+  await expect(gate.inspect(session,card.id,built)).rejects.toThrow();
+  expect(()=>gate.confirm(()=>({...session(),sessionId:"fixture-b"}),card.id)).toThrow();
+  const confirmed=gate.confirm(session,card.id);
+  expect(confirmed.amountBaseUnits).toBe(8n);
+  expect(()=>gate.confirm(session,card.id)).toThrow();
+  expect((await gate.inspect(session,card.id,built)).verdict).toBe("PASS");
+  const wire=await gate.handoff(session,card.id);
+  wire.set(ed25519.sign(msg, signer.secretKey.slice(0,32)),1);
+  const transport=vi.fn(async (b:Uint8Array)=>Buffer.from(b).equals(wire));
+  expect(await gate.submitAndConfirm(session,card.id,wire,transport)).toBe(true);
+  await expect(gate.submitAndConfirm(session,card.id,wire,transport)).rejects.toThrow();
+  expect(transport).toHaveBeenCalledTimes(1);
+});
+it("expires server drafts and never invokes submission for tampered wallet bytes",async()=>{
+  const {rpc}=setup(); let now=10;
+  const gate=createConfirmationGateway({rpc,now:()=>now});
+  const session=()=>({sessionId:"a",walletPublicKey:String(p),network:"devnet" as const});
+  const draft={recipient:String(r),amountBaseUnits:"8"};
+  const expired=gate.stage(session,draft); now+=APPROVAL_TTL_MS;
+  expect(()=>gate.confirm(session,expired.id)).toThrow(/EXPIRED/);
+  const {id}=gate.stage(session,draft); gate.confirm(session,id);
+  await gate.inspect(session,id,{intentId:id,messageBase64:msg.toString("base64"),messageHash:hashMessage(msg),
+    recentBlockhash:hash,lastValidBlockHeight:100});
+  const wire=await gate.handoff(session,id); wire[wire.length-1]=1;
+  const send=vi.fn();
+  await expect(gate.submitAndConfirm(session,id,wire,send)).rejects.toThrow();
+  expect(send).not.toHaveBeenCalled();
+});
 it("consumes handoffs and signed approvals only once under concurrent calls", async () => {
   const { deps } = setup();
   const report = await verify(intent, msg, deps);

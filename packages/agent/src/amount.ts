@@ -1,4 +1,4 @@
-export const U64_MAX = (1n << 64n) - 1n;
+import { U64_MAX } from "@solguard/shared";
 
 /** Converts a plain decimal SOL string to lamports without floating point. Returns null if invalid. */
 export function solToLamports(sol: string): bigint | null {

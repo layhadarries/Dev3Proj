@@ -6,16 +6,24 @@ Contracts: `packages/shared` (decimal strings on the wire, `bigint` in code via 
 ## Flow
 
 1. UI calls `parse` with `{ message }` and gets `ready` (with `draft`), `needs_clarification` or `unsupported`.
-2. UI shows the full recipient and amount from the draft. The user confirms.
-3. UI calls `build` with `{ draft, payer, confirmed: true }` and gets `{ intent, transaction }`.
-4. Same server process: `verify(parseConfirmedSolIntent(intent), messageBytes, deps)`.
-5. UI calls `explain` with the report in wire form (`serializeReport(report)`).
-6. Wallet handoff and signed check: follow `SECURITY_API.md` (`prepareWalletApproval`, sign only,
-   then `verifySigned`). Never pass the builder's bytes straight to the wallet.
+2. App route: `gateway.stage(session, draft)` returns the confirmation card. Show network, wallet,
+   full recipient, amount and expiry.
+3. On an explicit, CSRF-protected click: `gateway.confirm(session, id)`.
+4. UI calls `build` with `{ confirmationId }` only and gets `{ transaction, report }`. The handler
+   reads the gateway-held intent, builds from it and runs `gateway.inspect`. A 409 means start again.
+5. UI calls `explain` with the report. A `BLOCK` report has already consumed the confirmation.
+6. App route: `gateway.handoff`, sign only in the wallet, then `gateway.submitAndConfirm`. See
+   `SECURITY_API.md`. Never pass the builder's bytes to the wallet.
+
+All of steps 2 to 6 share one 60-second window starting at `stage`.
 
 ## Next.js route
 
 ```ts
+// gateway.ts: one instance per server process.
+export const gateway = createConfirmationGateway();
+
+// app/api/build/route.ts
 import { agentHandlers, llmFromEnv } from "@solguard/agent";
 import { getRecentBlockhash } from "@solguard/security";
 
@@ -27,24 +35,19 @@ export const POST = agentHandlers({
     },
   },
   llm: llmFromEnv(process.env),
-}).parse;
+  confirmations: (request) => {
+    const session = () => sessionFor(request); // yours: server-side state, never the request body
+    return {
+      intent: (id) => gateway.intent(session, id),
+      inspect: (id, built) => gateway.inspect(session, id, built),
+    };
+  },
+}).build;
 ```
 
-Export one handler per route file (`.parse`, `.build`, `.explain`). Tested on 27 November with
-Next.js 15.5.29 (`next build` and `next start`) against live Devnet and the local model. The app's
-`tsconfig.json` needs `"moduleResolution": "bundler"`; without it the package types are not found.
-
-## Proposed changes to `packages/shared`
-
-Agreed by Taz on 27 November, not yet applied; the agent enforces the first three itself for now.
-Zod also needs upgrading to 4.6.6 or later (high-severity advisory; CI audits at that level).
-
-- Add `BuiltTransaction` (see `packages/agent/src/builder.ts`).
-- Bound intent amounts to u64 and reject `payer === recipient`.
-- Reject reports whose verdict or severities contradict the findings, or that pass without a simulation.
-- Open point: `build` creates the intent from the client's `confirmed: true`. Per
-  `SECURITY_ARCHITECTURE.md`, the signing gate still needs a trusted, single-use confirmation record
-  (Taz owns this).
+Export one handler per route file (`.parse`, `.build`, `.explain`). The app's `tsconfig.json` needs
+`"moduleResolution": "bundler"`; without it the package types are not found. Routes sharing the
+gateway must run in the same Node process.
 
 ## Running the model
 

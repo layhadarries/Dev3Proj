@@ -148,7 +148,7 @@ export function createDevnetRpc(env: Environment = process.env) {
       const failure = z
         .object({
           value: z.object({
-            err: z.union([z.string(), z.record(z.unknown())]),
+            err: z.union([z.string(), z.record(z.string(), z.unknown())]),
           }),
         })
         .safeParse(result);

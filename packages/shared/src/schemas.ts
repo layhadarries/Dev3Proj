@@ -7,6 +7,8 @@ export const Base58PubkeySchema = z
   .refine(isValidBase58Pubkey, { message: "Invalid base58 32-byte Solana public key" });
 
 export const POSITIVE_INT_STRING_REGEX = /^[1-9][0-9]*$/;
+export const U64_MAX = (1n << 64n) - 1n;
+const fitsU64 = (v: string) => v.length < 20 || (v.length === 20 && v <= U64_MAX.toString());
 export const NON_NEGATIVE_INT_STRING_REGEX = /^(0|[1-9][0-9]*)$/;
 export const SIGNED_INT_STRING_REGEX = /^-?(0|[1-9][0-9]*)$/;
 
@@ -14,13 +16,13 @@ export const PositiveBigIntWireSchema = z
   .string()
   .regex(POSITIVE_INT_STRING_REGEX, {
     message: "Expected positive integer decimal string (> 0)",
-  });
+  }).refine(fitsU64, "Amount exceeds u64");
 
 export const NonNegativeBigIntWireSchema = z
   .string()
   .regex(NON_NEGATIVE_INT_STRING_REGEX, {
     message: "Expected non-negative integer decimal string",
-  });
+  }).refine(fitsU64, "Amount exceeds u64");
 
 export const SignedBigIntWireSchema = z
   .string()
@@ -90,15 +92,23 @@ const IntentBaseFields = {
 
 export const IntentSchema = z.object({
   ...IntentBaseFields,
-  amountBaseUnits: z.bigint().positive(),
-});
+  amountBaseUnits: z.bigint().positive().max(U64_MAX, "Amount exceeds u64"),
+}).strict().refine(v=>v.payer !== v.recipient,"Payer and recipient must differ");
 export type Intent = z.infer<typeof IntentSchema>;
 
 export const IntentWireSchema = z.object({
   ...IntentBaseFields,
   amountBaseUnits: PositiveBigIntWireSchema,
-});
+}).strict().refine(v=>v.payer !== v.recipient,"Payer and recipient must differ");
 export type IntentWire = z.infer<typeof IntentWireSchema>;
+
+/** Agent proposal, not authority. Verify decoded bytes and independently estimated effects. */
+export const BuiltTransactionSchema = z.object({
+  intentId:z.string().uuid(), messageBase64:z.string().min(4).max(1556).base64(),
+  messageHash:z.string().regex(/^[0-9a-f]{64}$/), recentBlockhash:Base58PubkeySchema,
+  lastValidBlockHeight:z.number().int().positive(),
+}).strict();
+export type BuiltTransaction = z.infer<typeof BuiltTransactionSchema>;
 
 export const EvidenceSchema = z.object({
   instructionIndex: z.number().int().nonnegative().optional(),
@@ -250,18 +260,24 @@ const ReportBaseFields = {
   engineVersion: z.string().min(1),
 };
 
+function consistent(r: {verdict:Verdict; findings:Finding[]; decodedInstructions:unknown[]; feeLamports:string|null;
+  checkedAtSlot:number|null; simulation:{preSlot:number;postSlot:number;deltas:unknown[]}|null}) {
+  const verdict = r.findings.some(f=>f.severity==="BLOCK") ? "BLOCK" : r.findings.some(f=>f.severity==="WARN") ? "WARN" : "PASS";
+  return verdict === r.verdict && (verdict === "BLOCK" || (!!r.simulation && r.checkedAtSlot === r.simulation.postSlot &&
+    r.simulation.preSlot === r.checkedAtSlot && r.simulation.deltas.length >= 2 && r.feeLamports !== null && r.decodedInstructions.length > 0));
+}
 export const SecurityReportSchema = z.object({
   ...ReportBaseFields,
   decodedInstructions: z.array(DecodedIxSchema),
   simulation: SimulationSummarySchema.nullable(),
-});
+}).refine(consistent,"Inconsistent verdict, findings or simulation evidence");
 export type SecurityReport = z.infer<typeof SecurityReportSchema>;
 
 export const SecurityReportWireSchema = z.object({
   ...ReportBaseFields,
   decodedInstructions: z.array(DecodedIxWireSchema),
   simulation: SimulationSummaryWireSchema.nullable(),
-});
+}).refine(consistent,"Inconsistent verdict, findings or simulation evidence");
 export type SecurityReportWire = z.infer<typeof SecurityReportWireSchema>;
 
 export function serializeIntent(intent: Intent): IntentWire {
