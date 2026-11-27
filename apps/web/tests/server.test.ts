@@ -242,10 +242,11 @@ describe("SDK submission transport", () => {
       expect(rpc.method).toBe("sendTransaction");
       expect(rpc.params[1]).toMatchObject({
         encoding: "base64",
-        skipPreflight: false,
         maxRetries: 0,
         preflightCommitment: "confirmed",
       });
+      // The SDK leaves skipPreflight out when it is false, so preflight stays on unless it is sent.
+      expect(rpc.params[1].skipPreflight).toBeUndefined();
       const wire = rpc.params[0] as string;
       sends.push(wire);
       if (sends.length === 1 && firstStatus !== 200) {
@@ -265,7 +266,7 @@ describe("SDK submission transport", () => {
   for (const firstStatus of [200, 429, 500, 503]) {
     it(`makes exactly one SDK HTTP send attempt for HTTP ${firstStatus} and reconciles the original signature`, async () => {
       const { submit, sends } = mockTransport(firstStatus);
-      const getSignatureStatus = vi.fn(async (_signature: string) => ({
+      const getSignatureStatus = vi.fn<NonNullable<ApplicationDependencies["getSignatureStatus"]>>(async () => ({
         slot: 123,
         confirmations: 1,
         err: null,
@@ -287,7 +288,7 @@ describe("SDK submission transport", () => {
   it("keeps an unreconciled HTTP 429 submission unknown without a second SDK send", async () => {
     let time = 1_000;
     const { submit, sends } = mockTransport(429);
-    const getSignatureStatus = vi.fn(async (_signature: string) => null);
+    const getSignatureStatus = vi.fn<NonNullable<ApplicationDependencies["getSignatureStatus"]>>(async () => null);
     const result = await submitPreparedTransaction({
       submit,
       getSignatureStatus,
@@ -1456,7 +1457,7 @@ describe("confirmation authorization and abuse controls", () => {
   });
 
   it("reports a finalized string-form ledger failure and never resends", async () => {
-    const getSignatureStatus = vi.fn(async (_signature: string) => ({
+    const getSignatureStatus = vi.fn<NonNullable<ApplicationDependencies["getSignatureStatus"]>>(async () => ({
       slot: 123, confirmations: null, err: "AccountNotFound",
       confirmationStatus: "finalized" as const,
     }));
