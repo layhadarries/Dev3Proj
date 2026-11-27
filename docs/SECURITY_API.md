@@ -4,7 +4,55 @@ Run the security package in a trusted Node service. Install with `pnpm install -
 
 **Teammate quick start:** Run `node packages/security/scripts/demo.mjs match` and `node packages/security/scripts/demo.mjs tamper` after building. The [executable consumer example](../packages/security/scripts/demo.mjs) imports the public package by name, parses wire intent, verifies unsigned bytes, prepares a wallet handoff and serializes a display report. The tamper path exercises rejection; valid-signature coverage uses ephemeral keys only in deterministic tests.
 
-## Verification → wallet → signed verification
+## Required application path: confirmation gateway
+
+The Node server composition root creates one `createConfirmationGateway(policy)`
+instance and owns the Devnet submission transport. For every request, pass a
+`resolveSession: () => { sessionId, walletPublicKey, network: "devnet" }`
+that reads the current authenticated server state on **each** call, including
+after RPC awaits. Do not capture a stale identity snapshot or accept these
+fields from JSON. Authenticate wallet ownership before binding it to the
+session; rotate the session binding on logout, reconnect or account/cluster
+change, even if the user later switches back.
+
+| Gateway call | Server and frontend responsibilities |
+| --- | --- |
+| `stage(resolveSession, draft)` | Pass a strict `{ recipient, amountBaseUnits }` with a decimal-string amount. Display the returned card's wallet, recipient, amount, asset, network and expiry. Treat its UUID as a lookup key, not authentication. |
+| `confirm(resolveSession, id)` | Call only from a dedicated, authenticated, CSRF-protected POST after the user explicitly confirms that card. The server stamps the intent; there is no `confirmed: true` input. |
+| `intent(resolveSession, id)` | Read a defensive copy only before inspection and only after confirmation. Do not cache it as authority. |
+| `inspect(resolveSession, id, proposal)` | Verify the builder's proposal against gateway state. Return `serializeReport(report)` for display, never as an approval token. Stop on `BLOCK`. |
+| `acknowledgeWarning(resolveSession, id)` | Only for a dedicated, authenticated, CSRF-protected POST after the user explicitly acknowledges the displayed `WARN` for this ID. Never auto-acknowledge or forward a JSON flag. |
+| `handoff(resolveSession, id)` | Return canonical base64 of the unsigned wire. A WARN without prior acknowledgement fails closed. Use a sign-only wallet method, never sign-and-send. Check the connected account and Devnet again; verify that the wallet adapter preserves the message byte-for-byte. |
+| `submitAndConfirm(resolveSession, id, signedBytes, transport)` | Decode only bounded, canonical base64 into bytes at ingress. Inject a trusted Devnet transport that sends the exact provided bytes without recompilation. Do not accept a report, intent, hash, RPC URL or transport from the client. The transport owns RPC submission/confirmation semantics. |
+
+**Ethan:** accept strict `{ confirmationId }` for Build. Inject request-bound
+`readIntent(id)` and `inspect(id, proposal)` callbacks from the composition
+root; type them using only `Intent`, `BuiltTransaction` and `SecurityReport`
+from `@solguard/shared`. Call read → build → inspect; return the display report,
+not the proposal bytes as a wallet payload. Agent source must not import
+`@solguard/security`. If returning an intent for display, use `serializeIntent`.
+
+**Zulayha:** use the server card as the confirmation UI's source of truth and
+keep the same ID through Build, warning acknowledgement, handoff and submit.
+Never infer approval from a client timestamp or editable report. BigInts are
+decimal strings on the wire. Abort on wallet change or expired/missing state.
+
+Each draft has 60 seconds; confirmation starts a separate 60-second window
+for the remaining flow. RPC and blockhash checks can invalidate it sooner.
+Inspect, handoff and submit reserve or consume their phase before awaiting RPC.
+After a failed attempt, restart with a new draft rather than replaying the ID.
+Map unavailable/foreign IDs to a generic 4xx, stale phase/expiry to a restart
+response, and upstream failures to sanitized errors. On an ambiguous transport
+failure, reconcile the transaction's status before authorizing another send.
+Records are process-local and disappear on restart; multi-worker deployments
+need session affinity. Rate-limit staging per principal; the process cap is not
+a per-user quota. The gateway cannot enforce a user gesture by itself or
+prevent a wallet from submitting outside this service.
+
+## Low-level verification (diagnostics and standalone demo)
+
+These primitives are not a substitute for the gateway in application routes:
+they cannot establish user confirmation or warning acknowledgement.
 
 1. Obtain confirmation independently of the AI. Present the **Devnet** network, payer, recipient and integer base-unit amount. Bind the confirmed data to the authenticated user, connected wallet and a single request. Never take wallet identity, clock, policy, RPC client, or acknowledgement from the AI. `parseConfirmedSolIntent` validates the existing intent wire format (decimal string amount, UUID, `kind: "transfer"`, `asset: {type:"SOL"}`, `payer`, `recipient`, `confirmedAt` in epoch ms). A valid schema is not evidence of user confirmation.
 2. Call `verify(intent, messageBytes, deps)` for a serialized legacy **message**, or `verifyUnsigned(intent, unsignedWireBytes, deps)` for a full unsigned wire transaction. Do not pass base64 text as bytes. Enforce input size limits at the API ingress. Do not round-trip through transaction compilation. Use the same trusted session and frozen policy for the whole approval; if anything changes, discard it and verify again.

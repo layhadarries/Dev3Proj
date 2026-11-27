@@ -5,6 +5,7 @@
 | Decoder and comparison | Build, typecheck, lint; 60 tests passed | Decoder is offline. |
 | Verification and simulation | Build, typecheck, lint; 62 tests passed | Same-bank simulation at confirmed slot `526831348`. |
 | Wallet handoff | Build, typecheck, lint; 82 tests passed | Isolated Node integration suite: 5 passed, 0 failed, 0 skipped. |
+| Confirmation gateway hardening | Build, typecheck, lint; 96 Vitest tests passed (9 files: unit + adversarial, mocked RPC fixtures) | Live Devnet Node suite: 5 passed, 0 failed (real RPC, public addresses, no signing/submission). `pnpm audit --audit-level high` exit 0 (4 moderate, transitive via `@solana/web3.js`). `gitleaks git` exit 0 (25 commits, no leaks). |
 
 ### Observed Devnet PASS
 
