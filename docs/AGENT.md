@@ -21,8 +21,10 @@ The card expires 60 seconds after `stage`. `confirm` starts a new 60-second wind
 ## Next.js route
 
 ```ts
-// gateway.ts: one instance per server process.
-export const gateway = createConfirmationGateway();
+// lib/gateway.ts: one instance per server process. Keep it on globalThis, because `next dev`
+// can evaluate the module again while compiling a route, which loses pending confirmations.
+const shared = globalThis as typeof globalThis & { solguardGateway?: ReturnType<typeof createConfirmationGateway> };
+export const gateway = (shared.solguardGateway ??= createConfirmationGateway());
 
 // app/api/build/route.ts
 import { agentHandlers, llmFromEnv } from "@solguard/agent";
@@ -48,7 +50,8 @@ export const POST = agentHandlers({
 
 Export one handler per route file (`.parse`, `.build`, `.explain`). The app's `tsconfig.json` needs
 `"moduleResolution": "bundler"`; without it the package types are not found. Routes sharing the
-gateway must run in the same Node process.
+gateway must run in the same Node process. Tested with Next.js 15.5.29 in `next dev` and
+`next start`, from `stage` to `handoff`, with a fixed test session (no real authentication or CSRF).
 
 ## Running the model
 
