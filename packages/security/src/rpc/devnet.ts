@@ -1,9 +1,13 @@
+import { parse } from "lossless-json";
+import { z } from "zod";
+import { Base58PubkeySchema } from "@solguard/shared";
+
 const endpoint = "https://api.devnet.solana.com";
 const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
-async function readRpc(env: Environment, method: "getGenesisHash" | "getBalance", params: unknown[]) {
+async function readRpc(env: Environment, method: "getGenesisHash" | "getBalance" | "getAccountInfo", params: unknown[]) {
   if ((env.SOLANA_NETWORK ?? "devnet") !== "devnet" ||
       (env.SOLANA_RPC_URL ?? endpoint) !== endpoint) {
     throw new Error("DEVNET_CONFIG_INVALID");
@@ -46,6 +50,20 @@ export async function getWalletBalance(address: string, env: Environment = proce
   return { network: "devnet", address, commitment: "confirmed",
     lamports: result.data.value, slot: result.data.context.slot } as const;
 }
-import { parse } from "lossless-json";
-import { z } from "zod";
-import { Base58PubkeySchema } from "@solguard/shared";
+const accountMetadata = z.object({
+  owner: Base58PubkeySchema, executable: z.boolean(), lamports: u64, space: u64,
+});
+const accountObservation = z.object({
+  context: z.object({ slot: u64 }), value: accountMetadata.nullable(),
+});
+
+export async function inspectAccount(address: string, env: Environment = process.env) {
+  if (!Base58PubkeySchema.safeParse(address).success) throw new Error("INVALID_PUBLIC_KEY");
+  await checkDevnetIdentity(env);
+  const result = accountObservation.safeParse(await readRpc(env, "getAccountInfo", [
+    address, { commitment: "confirmed", encoding: "base64", dataSlice: { offset: 0, length: 0 } },
+  ]));
+  if (!result.success) throw new Error("DEVNET_RPC_UNAVAILABLE");
+  return { network: "devnet", address, commitment: "confirmed",
+    slot: result.data.context.slot, account: result.data.value } as const;
+}

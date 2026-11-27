@@ -12,3 +12,9 @@ node --input-type=module -e 'import {checkDevnetIdentity} from "./packages/secur
 `await getWalletBalance(base58Address)` checks cluster identity, then calls Devnet `getBalance` at `confirmed` commitment. Returns `{network, address, commitment, lamports, slot}`. Both `lamports` and `slot` are bigint; convert each to a decimal string for JSON. Raw RPC integers are parsed before JavaScript can round them. Invalid evidence throws; zero from the RPC is valid but does not prove an account exists.
 
 Live read using the public System Program address (`11111111111111111111111111111111`): **1 lamport at slot 526821945**. This is an observation, not a fixture or expected future balance.
+
+## Account inspection
+
+`await inspectAccount(base58Address)` returns `{network, address, commitment, slot, account}`. Only an explicit RPC `null` means the account was absent at that slot; incomplete metadata throws instead. For existing accounts, `account.owner` is the owning **program**, not a wallet authority. `account.executable` is a boolean; `account.lamports`, `account.space` (bytes) and `slot` are bigint. The read requests no account data bytes and cannot establish token authorities or transaction safety.
+
+Live Devnet observation at confirmed slot **526823420**: the System Program was executable, owned by `NativeLoader1111111111111111111111111111111`, with 1 lamport and 14 bytes of space.
