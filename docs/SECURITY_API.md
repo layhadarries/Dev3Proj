@@ -281,11 +281,28 @@ they cannot establish user confirmation or warning acknowledgement.
 ```sh
 pnpm build
 node packages/security/scripts/demo.mjs match
+node packages/security/scripts/demo.mjs warn
 node packages/security/scripts/demo.mjs extra
 node packages/security/scripts/demo.mjs recipient
 node packages/security/scripts/demo.mjs amount
+node packages/security/scripts/demo.mjs fee
 node packages/security/scripts/demo.mjs tamper
+pnpm --filter @solguard/security test
 node --test packages/security/tests/integration/devnet.mjs
 ```
 
-All commands use public addresses, with no signing or submission. `match` also exercises the pre-wallet handoff. To use your own **Devnet** accounts, append the payer and recipient public keys after the scenario: `node packages/security/scripts/demo.mjs match "$PAYER" "$RECIPIENT"`. For `PASS`, use a funded plain system payer with enough SOL for 0.5 SOL plus fees and an existing plain system recipient. An unfunded recipient can produce `WARN` or a rent-related simulation failure. The demo's public addresses are examples, not wallets controlled by the project. Commands exit nonzero if the expected outcome is not observed.
+The CLI demos use the real exported engine and live, read-only Devnet RPC. They do not sign or submit transactions. `match` also exercises the unsigned wallet handoff; `tamper` changes those unsigned bytes before signed-wire verification. `warn` generates a fresh recipient address with no known private key. Use a funded plain system payer with enough SOL for 0.5 SOL plus fees; use an existing plain system recipient for `match` and `tamper`. To use your own **Devnet** accounts for the other transfer scenarios, append payer and recipient public keys after the scenario: `node packages/security/scripts/demo.mjs recipient "$PAYER" "$RECIPIENT"`. The demo's default public addresses are examples, not wallets controlled by the project. Commands exit nonzero if the expected verdict and finding are not observed.
+
+| Scenario | Command or fixture test | Expected result |
+|---|---|---|
+| Legitimate transfer | `demo.mjs match` | Live Devnet `PASS`; exact intended transfer and simulation evidence. |
+| New destination | `demo.mjs warn` | Live Devnet `WARN` / `RECIPIENT_NEW_ACCOUNT`; destination is generated for the run and never signed for. |
+| Recipient substitution | `demo.mjs recipient` | `BLOCK` / `RECIPIENT_MISMATCH`. |
+| Amount manipulation | `demo.mjs amount` | `BLOCK` / `AMOUNT_MISMATCH`. |
+| Hidden second transfer | `demo.mjs extra` | `BLOCK` / `EXTRA_TRANSFER`. |
+| Excessive fee request | `demo.mjs fee` | `BLOCK` / `EXCESSIVE_PRIORITY_FEE`; requests a high compute-unit price, but never submits it. |
+| Transaction tampering | `demo.mjs tamper` | Live simulation first, then `BLOCK` / `TX_MODIFIED` after changing the unsigned wire message. |
+| Replay / repeated handoff | `pipeline.test.ts`: “consumes handoffs and signed approvals only once under concurrent calls” and “gates the exact signed snapshot … and consumes it once” | Deterministic RPC fixture; second or concurrent use is rejected and transport is called once. |
+| Unauthorized confirmation | `pipeline.test.ts`: “reads only confirmed intents …” and “gates the exact signed snapshot on authenticated confirmation …” | Deterministic RPC fixture; pre-confirmation, foreign-session and client-asserted confirmation attempts are rejected. |
+
+`pnpm --filter @solguard/security test` runs the real decoder, verifier and gateway against deterministic injected RPC fixtures (not live RPC). The explicit integration command runs all seven live scenarios and fails if Devnet is unavailable or the expected evidence is not returned. Neither command signs or sends a transaction; the only transport-send assertions are mocked unit fixtures.
