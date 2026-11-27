@@ -1,5 +1,6 @@
 import {
   IntentSchema,
+  IntentWireSchema,
   type Intent,
   type SecurityReport,
 } from "@solguard/shared";
@@ -47,23 +48,15 @@ interface Approval {
   started: number;
 }
 const approvals = new WeakMap<object, Approval>();
-const confirmedSol = IntentSchema.extend({
+const confirmedSol = IntentSchema.safeExtend({
   asset: z.object({ type: z.literal("SOL") }).strict(),
   amountBaseUnits: z.bigint().positive().max(0xffffffffffffffffn),
   confirmedAt: z.number().int().safe().nonnegative(),
 }).strict();
 /** Strict untrusted JSON boundary. Reject extra fields rather than silently dropping constraints. */
 export function parseConfirmedSolIntent(input: unknown): Intent {
-  return confirmedSol
-    .extend({
-      amountBaseUnits: z
-        .string()
-        .max(20)
-        .regex(/^[1-9][0-9]*$/)
-        .transform(BigInt)
-        .pipe(confirmedSol.shape.amountBaseUnits),
-    })
-    .parse(input);
+  const wire = IntentWireSchema.safeExtend({asset:confirmedSol.shape.asset}).parse(input);
+  return confirmedSol.parse({...wire,amountBaseUnits:BigInt(wire.amountBaseUnits)});
 }
 function binding(intent: Intent) {
   return JSON.stringify([

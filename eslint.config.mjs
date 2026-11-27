@@ -7,6 +7,16 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  ...["security", "shared", "agent"].map(pkg => {
+    const forbidden = pkg === "shared" ? ["agent","security","web"] : pkg === "security" ? ["agent","web"] : ["security","web"];
+    return {
+      files: [`packages/${pkg}/src/**/*.{js,mjs,ts,tsx}`],
+      rules: { "no-restricted-imports": ["error", { patterns: forbidden.map(name => ({
+        group:[`@solguard/${name}`,`@solguard/${name}/**`,`**/${name}/**`],
+        message:`${pkg} runtime must not depend on ${name}. Use @solguard/shared contracts.`,
+      })) }] },
+    };
+  }),
   {
     files: ["packages/security/**/*.ts"],
     rules: {
