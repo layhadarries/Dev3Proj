@@ -105,6 +105,54 @@ async function signIn(
   return { wallet, response, cookie: response.headers.get("set-cookie")?.split(";", 1)[0] };
 }
 
+async function submitPreparedTransaction(
+  options: Pick<ApplicationDependencies, "getSignatureStatus" | "now" | "sleep">,
+) {
+  return withSpendLimit("1000000000", async () => {
+    const owner = Keypair.generate();
+    const recipient = Keypair.generate().publicKey;
+    let submittedBytes: Uint8Array | undefined;
+    const submit = vi.fn(async (bytes: Uint8Array) => {
+      submittedBytes = Buffer.from(bytes);
+      return "mock-devnet-signature";
+    });
+    const app = handlers({
+      ...options,
+      rpc: verificationRpc(8n),
+      blockhash: async () => ({
+        blockhash: Keypair.generate().publicKey.toBase58(),
+        lastValidBlockHeight: 123,
+      }),
+      submit,
+    });
+    const { cookie } = await signIn(app, owner);
+    const staged = await app.stage(request("stage", {
+      recipient: recipient.toBase58(),
+      amountBaseUnits: "8",
+    }, { cookie }));
+    const { id } = await staged.json();
+    await app.confirm(request("confirm", { id }, { cookie }));
+    const built = await app.build(request("build", { confirmationId: id }, { cookie }));
+    const { transaction } = await built.json();
+    const handoff = await app.handoff(request("handoff", { id }, { cookie }));
+    const { wire } = await handoff.json();
+    const signed = VersionedTransaction.deserialize(Buffer.from(wire, "base64"));
+    expect(Buffer.from(signed.message.serialize()).toString("base64")).toBe(transaction.messageBase64);
+    signed.sign([owner]);
+    const signedBase64 = Buffer.from(signed.serialize()).toString("base64");
+    const submitRequest = () => request("submit", { id, signed: signedBase64 }, { cookie });
+    const response = await app.submit(submitRequest());
+
+    return {
+      response,
+      signedBase64,
+      submit,
+      submittedBytes,
+      retry: () => app.submit(submitRequest()),
+    };
+  });
+}
+
 function handlers(options: ApplicationDependencies = {}) {
   return createApplicationHandlers({ allowedOrigin: origin, ...options });
 }
@@ -342,11 +390,21 @@ describe("confirmation authorization and abuse controls", () => {
       signedSnapshot = Buffer.from(bytes);
       return "mock-devnet-signature";
     });
+    const getSignatureStatus = vi.fn(async (signature: string) => {
+      expect(signature).toBe("mock-devnet-signature");
+      return {
+        slot: 123,
+        confirmations: 1,
+        err: null,
+        confirmationStatus: "confirmed" as const,
+      };
+    });
     await withSpendLimit("1000000000", async () => {
     const app = handlers({
       rpc: verificationRpc(8n),
       blockhash: async () => ({ blockhash, lastValidBlockHeight: 123 }),
       submit,
+      getSignatureStatus,
     });
     const { cookie } = await signIn(app, owner);
     const staged = await app.stage(request("stage", {
@@ -376,7 +434,55 @@ describe("confirmation authorization and abuse controls", () => {
     expect(await submitted.json()).toEqual({ signature: "mock-devnet-signature" });
     expect(signedSnapshot.toString("base64")).toBe(signedBase64);
     expect(submit).toHaveBeenCalledTimes(1);
+    expect(getSignatureStatus).toHaveBeenCalledWith("mock-devnet-signature");
     });
+  });
+
+  it("reports an on-chain transaction error as failed", async () => {
+    const result = await submitPreparedTransaction({
+      getSignatureStatus: async () => ({
+        slot: 123,
+        confirmations: 1,
+        err: { InstructionError: [0, { Custom: 1 }] },
+        confirmationStatus: "confirmed",
+      }),
+    });
+
+    expect(result.response.status).toBe(502);
+    expect((await result.response.json()).error).toMatch(/Transaction failed on Devnet/);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+    expect(Buffer.from(result.submittedBytes ?? []).toString("base64")).toBe(result.signedBase64);
+  });
+
+  it("reports a timed-out signature status as unconfirmed and never resubmits", async () => {
+    let time = 1_000;
+    const getSignatureStatus = vi.fn(async () => null);
+    const result = await submitPreparedTransaction({
+      getSignatureStatus,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    });
+
+    expect(result.response.status).toBe(504);
+    expect((await result.response.json()).error).toMatch(/unconfirmed.*timed out.*Do not submit again/);
+    expect(getSignatureStatus).toHaveBeenCalled();
+    expect(result.submit).toHaveBeenCalledTimes(1);
+    expect((await result.retry()).status).toBe(409);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a Devnet RPC confirmation error as unconfirmed and never resubmits", async () => {
+    const getSignatureStatus = vi.fn(async () => {
+      throw new Error("RPC unavailable");
+    });
+    const result = await submitPreparedTransaction({ getSignatureStatus });
+
+    expect(result.response.status).toBe(504);
+    expect((await result.response.json()).error).toMatch(/unconfirmed.*Devnet RPC could not confirm.*Do not submit again/);
+    expect(getSignatureStatus).toHaveBeenCalledTimes(1);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+    expect((await result.retry()).status).toBe(409);
+    expect(result.submit).toHaveBeenCalledTimes(1);
   });
 
   it("enforces below, exact, above and fee-inclusive spend limits through stage and build/inspect", async () => {
