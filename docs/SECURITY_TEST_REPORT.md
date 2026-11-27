@@ -473,3 +473,15 @@ metadata is rejected. Regression tests exercise confirmed, finalized, legacy,
 processed and malformed statuses plus the authenticated submit response and
 one-shot behavior. Full workspace execution and independent browser retesting
 remain pending; no passing results or coverage figures are claimed here.
+
+### Local execution at 2631284 and transport regression correction
+
+The production build and typecheck passed locally; 342 of 347 tests passed
+(96 security, 99 agent, 147 web). All ledger classification regressions
+passed. Five SDK tests failed with an empty recorded send list, and lint
+flagged three unused mock parameters. This revision captures every fetch
+invocation before validation, moves wire assertions outside the exception-
+handling boundary, normalizes the endpoint URL, allows the SDK's omitted
+false preflight flag, and separately asserts the actual SDK return or error.
+No production code was changed. The one-send and exact-wire requirements
+remain unchanged. Corrected tests have not yet been executed.

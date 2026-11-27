@@ -234,38 +234,57 @@ async function withSpendLimit<T>(value: string | undefined, run: () => Promise<T
 
 describe("SDK submission transport", () => {
   function mockTransport(firstStatus: number) {
-    const sends: string[] = [];
-    const submit = createDevnetSubmissionTransport(async (input, init) => {
-      expect(String(input)).toBe("https://api.devnet.solana.com");
+    const attempts: { url: string; body: unknown }[] = [];
+    const outcomes: { outcome: string; detail: string }[] = [];
+    const transport = createDevnetSubmissionTransport(async (input, init) => {
+      // Capture every invocation before inspecting it: the application catches
+      // transport exceptions, including assertions thrown inside a mock fetch.
+      attempts.push({ url: String(input), body: init?.body });
       if (typeof init?.body !== "string") throw new Error("Expected JSON-RPC request body");
       const rpc = JSON.parse(init.body);
-      expect(rpc.method).toBe("sendTransaction");
-      expect(rpc.params[1]).toMatchObject({
-        encoding: "base64",
-        skipPreflight: false,
-        maxRetries: 0,
-        preflightCommitment: "confirmed",
-      });
-      const wire = rpc.params[0] as string;
-      sends.push(wire);
-      if (sends.length === 1 && firstStatus !== 200) {
+      if (attempts.length === 1 && firstStatus !== 200) {
         return new Response("synthetic RPC failure", { status: firstStatus });
       }
-      // A retry would receive a valid receipt, making the attempt-count assertion essential.
-      const transaction = VersionedTransaction.deserialize(Buffer.from(wire, "base64"));
+      const transaction = VersionedTransaction.deserialize(Buffer.from(rpc.params[0], "base64"));
       return Response.json({
         jsonrpc: "2.0",
         id: rpc.id,
         result: bs58.encode(transaction.signatures[0]!),
       });
     });
-    return { submit, sends };
+    const submit = async (bytes: Uint8Array) => {
+      try {
+        const signature = await transport(bytes);
+        outcomes.push({ outcome: "returned", detail: signature });
+        return signature;
+      } catch (error) {
+        outcomes.push({ outcome: "thrown", detail: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
+    };
+    function assertSingleSend(expectedWire: string) {
+      expect(attempts).toHaveLength(1);
+      const attempt = attempts[0]!;
+      expect(new URL(attempt.url).href).toBe(new URL("https://api.devnet.solana.com").href);
+      expect(typeof attempt.body).toBe("string");
+      const rpc = JSON.parse(attempt.body as string);
+      expect(rpc.method).toBe("sendTransaction");
+      expect(rpc.params[0]).toBe(expectedWire);
+      expect(rpc.params[1]).toMatchObject({
+        encoding: "base64",
+        maxRetries: 0,
+        preflightCommitment: "confirmed",
+      });
+      // The SDK may omit false; preflight is enabled by default.
+      expect([undefined, false]).toContain(rpc.params[1].skipPreflight);
+    }
+    return { submit, outcomes, assertSingleSend };
   }
 
   for (const firstStatus of [200, 429, 500, 503]) {
     it(`makes exactly one SDK HTTP send attempt for HTTP ${firstStatus} and reconciles the original signature`, async () => {
-      const { submit, sends } = mockTransport(firstStatus);
-      const getSignatureStatus = vi.fn(async (_signature: string) => ({
+      const { submit, outcomes, assertSingleSend } = mockTransport(firstStatus);
+      const getSignatureStatus = vi.fn(async () => ({
         slot: 123,
         confirmations: 1,
         err: null,
@@ -274,20 +293,24 @@ describe("SDK submission transport", () => {
       const result = await submitPreparedTransaction({ submit, getSignatureStatus });
       const signed = VersionedTransaction.deserialize(Buffer.from(result.signedBase64, "base64"));
       const expected = bs58.encode(signed.signatures[0]!);
-
+      assertSingleSend(result.signedBase64);
+      if (firstStatus === 200) {
+        expect(outcomes).toEqual([{ outcome: "returned", detail: expected }]);
+      } else {
+        expect(outcomes).toEqual([{ outcome: "thrown", detail: expect.stringContaining(String(firstStatus)) }]);
+      }
       expect(result.response.status).toBe(200);
       expect(await result.response.json()).toEqual({ signature: expected });
       expect(getSignatureStatus).toHaveBeenCalledWith(expected);
-      expect(sends).toEqual([result.signedBase64]);
       expect((await result.retry()).status).toBe(409);
-      expect(sends).toEqual([result.signedBase64]);
+      assertSingleSend(result.signedBase64);
     });
   }
 
   it("keeps an unreconciled HTTP 429 submission unknown without a second SDK send", async () => {
     let time = 1_000;
-    const { submit, sends } = mockTransport(429);
-    const getSignatureStatus = vi.fn(async (_signature: string) => null);
+    const { submit, outcomes, assertSingleSend } = mockTransport(429);
+    const getSignatureStatus = vi.fn(async () => null);
     const result = await submitPreparedTransaction({
       submit,
       getSignatureStatus,
@@ -297,13 +320,13 @@ describe("SDK submission transport", () => {
     });
     const signed = VersionedTransaction.deserialize(Buffer.from(result.signedBase64, "base64"));
     const expected = bs58.encode(signed.signatures[0]!);
-
+    assertSingleSend(result.signedBase64);
+    expect(outcomes).toEqual([{ outcome: "thrown", detail: expect.stringContaining("429") }]);
     expect(result.response.status).toBe(504);
     expect((await result.response.json()).error).toMatch(/unconfirmed.*Do not submit again/);
     expect(getSignatureStatus).toHaveBeenCalledWith(expected);
-    expect(sends).toEqual([result.signedBase64]);
     expect((await result.retry()).status).toBe(409);
-    expect(sends).toEqual([result.signedBase64]);
+    assertSingleSend(result.signedBase64);
   });
 });
 
@@ -1456,7 +1479,7 @@ describe("confirmation authorization and abuse controls", () => {
   });
 
   it("reports a finalized string-form ledger failure and never resends", async () => {
-    const getSignatureStatus = vi.fn(async (_signature: string) => ({
+    const getSignatureStatus = vi.fn(async () => ({
       slot: 123, confirmations: null, err: "AccountNotFound",
       confirmationStatus: "finalized" as const,
     }));
