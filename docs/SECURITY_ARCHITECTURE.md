@@ -1,6 +1,6 @@
 # Security implementation plan
 
-The `feat/solana-security` branch already contains a pnpm workspace, strict TypeScript, ESLint, Vitest, shared Zod schemas, web3.js v1, SPL Token, a message hash and a fail-closed verifier shell. Mocks represent fixtures only. The empty `RpcClient` is not an evidence provider.
+The foundation on `feat/solana-security` supplied the pnpm workspace, strict TypeScript, ESLint, Vitest, shared Zod schemas, web3.js v1, SPL Token dependency and message hash. The SOL pipeline on `feat/devnet-transaction-firewall` implements the typed read-only RPC client, legacy decoder, simulation checks and signing handoff. Mocks represent fixtures only. See [the integration contract](SECURITY_API.md) for the implemented scope.
 
 | Milestone | Gate before depending on this layer |
 |---|---|
@@ -16,7 +16,7 @@ The `feat/solana-security` branch already contains a pnpm workspace, strict Type
 
 ## Integration decisions
 
-The confirmation component must obtain explicit user authorization separately from the AI proposal. An intent ID or timestamp supplied by the AI is not authorization. Retain the existing `@solguard/shared` decimal-string wire amounts and `payer` field. Agree with consumers on adding explicit network binding and mapping `WARN` to `REVIEW` before changing schemas. Consumers must never treat mock reports, an empty findings array, `aggregateVerdict` or a client-supplied message hash as a signing capability. Currently neither verification stub authorizes signing.
+The confirmation component must obtain explicit user authorization separately from the AI proposal. An intent ID or timestamp supplied by the AI is not authorization. Retain the existing `@solguard/shared` decimal-string wire amounts and `payer` field. The trusted session supplies the network and wallet separately. `WARN` is the review verdict and requires explicit acknowledgement at handoff. Consumers must never treat mock reports, an empty findings array, `aggregateVerdict` or a client-supplied message hash as a signing capability.
 
 ## Threat boundaries
 

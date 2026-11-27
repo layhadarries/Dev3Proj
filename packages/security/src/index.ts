@@ -11,8 +11,18 @@ export type { RpcClient } from "./rpc/types.js";
 export { createDevnetRpc } from "./rpc/devnet.js";
 export {
   ENGINE_VERSION,
+  APPROVAL_TTL_MS,
+  prepareWalletApproval,
+  parseConfirmedSolIntent,
   verify,
+  verifyUnsigned,
   verifySigned,
   type VerifyDeps,
 } from "./verification/verify.js";
-export { checkDevnetIdentity, getRecentBlockhash, getWalletBalance, inspectAccount, requireValidBlockhash } from "./rpc/devnet.js";
+export {
+  checkDevnetIdentity,
+  getRecentBlockhash,
+  getWalletBalance,
+  inspectAccount,
+  requireValidBlockhash,
+} from "./rpc/devnet.js";
