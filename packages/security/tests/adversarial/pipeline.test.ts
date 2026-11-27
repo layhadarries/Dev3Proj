@@ -335,17 +335,19 @@ it("rejects expired approvals, invalid blockhashes and changed fees", async () =
   rpc.fresh.mockRejectedValueOnce(new Error("BLOCKHASH_NOT_VALID"));
   expect((await verify(intent, msg, d)).findings[0]?.ruleId).toBe("TX_EXPIRED");
 });
-it("warns on new recipient and blocks inconsistent deltas, fees and missing evidence", async () => {
+it("blocks fees that exceed the trusted cap before simulation", async () => {
+  const { deps, rpc } = setup();
+  const report = await verify(intent, msg, { ...deps, maxFeeLamports: 4999n });
+  expect(report.findings[0]?.ruleId).toBe("EXCESSIVE_PRIORITY_FEE");
+  expect(rpc.simulate).not.toHaveBeenCalled();
+});
+it("warns on a new recipient and blocks inconsistent deltas and missing evidence", async () => {
   const { value, deps, rpc } = setup(0n);
   expect((await verify(intent, msg, deps)).verdict).toBe("WARN");
   value.postBalances[1] = 9n;
   expect((await verify(intent, msg, deps)).findings[0]?.ruleId).toBe(
     "UNEXPECTED_BALANCE_CHANGE",
   );
-  expect(
-    (await verify(intent, msg, { ...deps, maxFeeLamports: 4999n })).findings[0]
-      ?.ruleId,
-  ).toBe("EXCESSIVE_PRIORITY_FEE");
   rpc.simulate.mockRejectedValue(new Error("private rpc detail"));
   expect((await verify(intent, msg, deps)).findings[0]?.ruleId).toBe(
     "RPC_UNAVAILABLE",
