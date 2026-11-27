@@ -7,7 +7,7 @@ import {
 } from "@solguard/shared";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   agentHandlers, buildTransfer, explainReport, lamportsToSol, llmFromEnv,
   openAiCompatibleClient, parseTransfer, solToLamports, type LlmClient,
@@ -51,6 +51,9 @@ describe("parser", () => {
   it("uses the model for looser phrasing", async () => {
     expect(await parseTransfer(loose, says(transfer("0.5", bob)))).toMatchObject({ status: "ready", source: "llm" });
   });
+  it("does not guess at looser phrasing when no model is configured", async () => {
+    expect(await parseTransfer(loose)).toMatchObject({ status: "needs_clarification" });
+  });
   it("accepts an equivalent spelling of the typed amount only", async () => {
     const message = `please pay ${bob} the sum of .001 SOL`;
     expect(await parseTransfer(message, says(transfer("0.001", bob)))).toMatchObject({ draft: { amountBaseUnits: "1000000" } });
@@ -72,6 +75,17 @@ describe("parser", () => {
   it("fails closed when the model errors", async () => {
     const broken: LlmClient = { complete: async () => { throw new Error("down"); } };
     expect((await parseTransfer(loose, broken)).status).toBe("needs_clarification");
+  });
+  it.each([
+    ["clarify", { action: "clarify" }],
+    ["unsupported", { action: "unsupported" }],
+  ])("respects the model's %s decision without creating a draft", async (_name, output) => {
+    const result = await parseTransfer(loose, says(output));
+    if (result.status === "needs_clarification") expect(result.question).toBeTruthy();
+    else {
+      expect(result.status).toBe("unsupported");
+      if (result.status === "unsupported") expect(result.reason).toBeTruthy();
+    }
   });
   it.each([
     `swap 1 SOL to USDC`,
@@ -288,6 +302,50 @@ describe("model client", () => {
   it("is disabled without full configuration", () => {
     expect(llmFromEnv({ LLM_MODEL: "m" })).toBeUndefined();
   });
+  it("accepts only textual content from a successful model response", async () => {
+    const client = openAiCompatibleClient({
+      baseUrl: "https://example.invalid/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      fetch: (async () => Response.json({
+        choices: [{ message: { content: '{"action":"clarify"}' } }],
+      })) as typeof fetch,
+    });
+    await expect(client.complete("system", "user")).resolves.toBe('{"action":"clarify"}');
+
+    const malformed = openAiCompatibleClient({
+      baseUrl: "https://example.invalid/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      fetch: (async () => Response.json({ choices: [{ message: { content: null } }] })) as typeof fetch,
+    });
+    await expect(malformed.complete("system", "user")).rejects.toThrow("no text content");
+    const emptyChoices = openAiCompatibleClient({
+      baseUrl: "https://example.invalid/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      fetch: (async () => Response.json({ choices: [] })) as typeof fetch,
+    });
+    await expect(emptyChoices.complete("system", "user")).rejects.toThrow("no text content");
+  });
+  it("uses configured environment values without exposing a model tool", async () => {
+    const fetch = vi.fn(async () => Response.json({
+      choices: [{ message: { content: "ok" } }],
+    }));
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const client = llmFromEnv({
+        LLM_BASE_URL: "https://example.invalid/v1/",
+        LLM_API_KEY: "test-key",
+        LLM_MODEL: "test-model",
+      });
+      expect(client).toBeDefined();
+      await expect(client?.complete("system", "user")).resolves.toBe("ok");
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("trust boundary", () => {
@@ -361,6 +419,19 @@ describe("handlers", () => {
     expect((await handlers.build(post({ confirmationId: id }))).status).toBe(409);
     await expect(gateway.handoff(owner, id)).resolves.toBeInstanceOf(Buffer);
   });
+  it("rejects a resolver that returns a draft instead of a confirmed intent", async () => {
+    const inspect = vi.fn();
+    const handlers = agentHandlers({
+      rpc: { getLatestBlockhash: async () => ({ blockhash, lastValidBlockHeight: 100 }) },
+      confirmations: () => ({
+        intent: () => ({ ...confirmIntent(draft, alice), confirmedAt: 0 }),
+        inspect,
+      }),
+    });
+
+    expect((await handlers.build(post({ confirmationId: globalThis.crypto.randomUUID() }))).status).toBe(409);
+    expect(inspect).not.toHaveBeenCalled();
+  });
   it("refuses to build before confirmation, for another session or for an unknown id", async () => {
     const { gateway, handlers, owner } = app();
     const { id } = gateway.stage(owner, draft);
@@ -378,6 +449,14 @@ describe("handlers", () => {
       expect((await handlers.build(post(body))).status).toBe(400);
     }
     expect((await handlers.build(post({ confirmationId }, "text/plain"))).status).toBe(400);
+  });
+  it("rejects an empty request body", async () => {
+    const { handlers } = app();
+    const response = await handlers.parse(new Request("http://localhost", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    }));
+    expect(response.status).toBe(400);
   });
   it("stops reading oversized bodies", async () => {
     const { handlers } = app();

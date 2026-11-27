@@ -29,3 +29,77 @@ node packages/security/scripts/wallet-evidence.mjs --new-demo-wallet > .local-ev
 This generates an independent ephemeral Devnet demonstration wallet, retains only its public key, and requests no funding. With zero lamports its otherwise matching transfer must block during simulation. The runner also tests static intent mismatches; an unfunded wallet cannot exercise a successful handoff. For the funded path, pass `"$PAYER"` in place of `--new-demo-wallet`, or omit the argument and set `SOLGUARD_TEST_PAYER`.
 
 Keep original RPC responses local and unmodified. Do not publish personal addresses, credentials, or identifying evidence without the owner's explicit permission. To share a demonstration, use a separate demonstration wallet and review the artifact before publication.
+
+## Security test coverage analysis — 2026-11-27
+
+**Branch:** `feat/security-hardening`
+**Synchronization:** merged `feat/web-ui` at `32fe924` into this branch with merge commit `e0099d6`; the HTTP security headers commit `95bc584` remains in history.
+
+### Test count
+
+Coverage additions were measured against the complete suite after branch synchronization, including Ethan's parser-hardening tests.
+
+| Area | Before | After |
+| --- | ---: | ---: |
+| Security engine | 96 | 96 |
+| AI agent | 85 | 92 |
+| Web application | 52 | 62 |
+| **Total** | **233** | **250** |
+
+The 17 added tests target untested boundaries: model clarification and unsupported responses, requests without a configured model, malformed model response content, an unconfirmed intent returned by a resolver, empty agent request bodies, HTTP origin/address/rate-limit/body/error handling, actual API route dispatch, and CSP nonce forwarding plus HTTPS HSTS/HMR behavior.
+
+### Coverage before and after
+
+V8 coverage was collected with `@vitest/coverage-v8` 4.1.12. The same source include patterns were used before and after: all TypeScript sources in `packages/security` and `packages/agent`, and `apps/web` server/client libraries, API routes, app components, and middleware.
+
+| Package | Metric | Before | After |
+| --- | --- | ---: | ---: |
+| Security engine | Statements | 92.03% | 92.03% |
+|  | Branches | 88.95% | 88.95% |
+|  | Functions | 96.07% | 96.07% |
+|  | Lines | 93.84% | 93.84% |
+| AI agent | Statements | 94.55% | 99.31% |
+|  | Branches | 87.87% | 97.97% |
+|  | Functions | 100.00% | 100.00% |
+|  | Lines | 96.61% | 99.15% |
+| Web application | Statements | 71.40% | 75.78% |
+|  | Branches | 63.49% | 68.03% |
+|  | Functions | 67.34% | 69.38% |
+|  | Lines | 76.23% | 80.80% |
+
+#### Security-critical module coverage after additions
+
+| Scope | Statements | Branches | Functions | Lines |
+| --- | ---: | ---: | ---: | ---: |
+| Security transaction decoder and verification | 92.76% | 90.41% | 100.00% | 94.44% |
+| Agent parser, handlers, and LLM client | 100.00% | 98.61% | 100.00% | 100.00% |
+| Web server and CSP middleware | 87.84% | 80.06% | 88.51% | 93.12% |
+| Web HTTP boundary helpers | 97.75% | 95.95% | 90.00% | 98.80% |
+| Web session store | 89.87% | 79.31% | 100.00% | 93.85% |
+| CSP helper and middleware | 100.00% | 90.00% | 100.00% | 100.00% |
+
+The 90% line-and-branch target is met for the measured security decoder/verification and agent parsing/authorization modules, and for the focused HTTP and CSP helpers. It is **not** met for the complete web server/middleware scope or session-store branches.
+
+### Security scenarios exercised
+
+The combined tests cover authentication failures, expired and replayed challenges, session expiration/revocation/rotation, cross-session confirmation access, CSRF/origin rejection, malformed and oversized requests, rate-limit boundaries, prompt injection and altered model output, spending-cap boundaries, transaction-byte/signature verification, duplicate submission prevention, concurrent approval consumption, RPC failures and timeouts, CSP headers, and fail-closed error responses. The added tests specifically increased coverage of model output parsing and browser-facing HTTP/CSP boundaries.
+
+### Remaining gaps and limitations
+
+- Web-wide coverage remains 80.80% line and 68.03% branch. The unrendered React transfer UI and portions of wallet/client flow account for much of the remaining gap; the current tests do not mount the UI in a browser test environment.
+- Web server plus middleware branches are 80.06%, and session-store branches are 79.31%. Uncovered paths include rare resource-cap/eviction conditions and combinations of route-level failure handling. These gaps are not reported as vulnerabilities.
+- Security-engine aggregate branch coverage is 88.95%, below 90%; decoder/verification branches are 90.41%. Some configuration and RPC transport branches remain unexercised.
+- RPC, wallet signatures, broadcast/confirmation, and LLM behavior are tested with deterministic fixtures or mock responses. They do not establish behavior against every real wallet extension, RPC provider, external model, production ingress/proxy, or adversarial network schedule. Concurrency tests exercise selected races, not load or stress behavior.
+- No vulnerability was demonstrated by the tests run. This coverage exercise is not proof of absence of vulnerabilities or a substitute for a dedicated security audit.
+
+### Verification
+
+Passed after the final test additions:
+
+- `pnpm test` — 250 tests passed.
+- V8 coverage runs for `@solguard/security`, `@solguard/agent`, and `@solguard/web`.
+- `pnpm lint`
+- `pnpm typecheck`
+- `pnpm build`
+
+The coverage provider was added as a root development dependency at the same version as Vitest; no runtime dependency or application behavior was changed for coverage collection.

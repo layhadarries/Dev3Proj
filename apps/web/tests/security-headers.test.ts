@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
+import { middleware } from "../middleware";
 import { createSecurityHeaders } from "../lib/server/security-headers";
 
 describe("HTTP security headers", () => {
@@ -36,9 +38,39 @@ describe("HTTP security headers", () => {
     expect(headers.has("strict-transport-security")).toBe(false);
   });
 
+  it("uses the secure HMR websocket protocol when development is served over HTTPS", () => {
+    const headers = createSecurityHeaders(nonce, new URL("https://localhost:3000/"), false);
+
+    expect(headers.get("content-security-policy")).toContain("connect-src 'self' wss://localhost:3000");
+    expect(headers.has("strict-transport-security")).toBe(false);
+  });
+
   it("omits HSTS on production HTTP requests", () => {
     const headers = createSecurityHeaders(nonce, new URL("http://solguard.example/"), true);
 
     expect(headers.has("strict-transport-security")).toBe(false);
+  });
+
+  it("attaches nonce-bearing CSP to the response and forwards it to Next.js", () => {
+    const response = middleware(new NextRequest("http://localhost:3000/"));
+    const csp = response.headers.get("content-security-policy") ?? "";
+    const forwardedCsp = response.headers.get("x-middleware-request-content-security-policy") ?? "";
+    const nonce = csp.match(/'nonce-([^']+)'/)?.[1];
+
+    expect(nonce).toBeTruthy();
+    expect(forwardedCsp).toBe(csp);
+    expect(response.headers.get("x-middleware-override-headers")).toContain("content-security-policy");
+    expect(response.headers.get("x-frame-options")).toBe("DENY");
+  });
+
+  it("sets HSTS in middleware only for production HTTPS requests", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const response = middleware(new NextRequest("https://solguard.example/"));
+      expect(response.headers.get("strict-transport-security")).toBe("max-age=31536000");
+      expect(response.headers.get("content-security-policy")).toContain("upgrade-insecure-requests");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
