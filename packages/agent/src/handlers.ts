@@ -28,13 +28,24 @@ export interface AgentDependencies {
 const REJECTED = /^(INTENT_NOT_CONFIRMED|INVALID_CONFIRMATION|INVALID_CONFIRMATION_PHASE|CONFIRMATION_EXPIRED|AUTHENTICATED_DEVNET_SESSION_REQUIRED)$/;
 class NotConfirmed extends Error {}
 
+/** Far above any real request; a wire security report is a few kilobytes. */
+export const MAX_BODY_BYTES = 32 * 1024;
+
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const invalid = () => json({ error: "Invalid request" }, 400);
 
 async function readJson(request: Request): Promise<unknown> {
   // Requiring a JSON content type stops simple cross-site form posts.
   if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Error();
-  return request.json();
+  // Count the bytes as they arrive, because Content-Length may be missing or wrong.
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of request.body ?? []) {
+    size += chunk.byteLength;
+    if (size > MAX_BODY_BYTES) throw new Error();
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 async function handle<S extends z.ZodType>(request: Request, schema: S, run: (input: z.infer<S>) => Promise<unknown>) {

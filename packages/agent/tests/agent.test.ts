@@ -343,6 +343,22 @@ describe("handlers", () => {
     }
     expect((await handlers.build(post({ confirmationId }, "text/plain"))).status).toBe(400);
   });
+  it("stops reading oversized bodies", async () => {
+    const { handlers } = app();
+    const padded = (size: number) => post({ message: `send 1 SOL to ${bob}` + " ".repeat(size) });
+    for (const handler of [handlers.parse, handlers.build, handlers.explain]) {
+      expect((await handler(padded(40_000))).status).toBe(400);
+    }
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull: (controller) => { pulled += 1; controller.enqueue(new Uint8Array(8192)); },
+    });
+    const request = new Request("http://localhost", {
+      method: "POST", headers: { "content-type": "application/json" }, body: endless, duplex: "half",
+    } as RequestInit);
+    expect((await handlers.parse(request)).status).toBe(400);
+    expect(pulled).toBeLessThan(10);
+  });
   it("hides internal errors", async () => {
     const { gateway, handlers, owner } = app(true);
     const { id } = gateway.stage(owner, draft);
