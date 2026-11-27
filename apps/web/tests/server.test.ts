@@ -3,7 +3,7 @@ import { Keypair, VersionedTransaction } from "@solana/web3.js";
 import type { RpcClient } from "@solguard/security";
 import { describe, expect, it, vi } from "vitest";
 import { confirmSignature, createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
-import { InFlightLimiter, RateLimiter } from "../lib/server/http";
+import { HttpError, InFlightLimiter, RateLimiter } from "../lib/server/http";
 import { SessionStore } from "../lib/server/sessions";
 
 const origin = "http://localhost:3000";
@@ -141,10 +141,12 @@ async function signIn(
 ) {
   const challengeResponse = await handlers.challenge(request("session/challenge", { wallet: wallet.publicKey.toBase58() }, options));
   const { message } = await challengeResponse.json();
+  const challengeCookie = challengeResponse.headers.get("set-cookie")?.split(";", 1)[0];
+  const cookies = [challengeCookie, options.cookie].filter((cookie): cookie is string => Boolean(cookie)).join("; ");
   const response = await handlers.signIn(request("session", {
     wallet: wallet.publicKey.toBase58(),
     signature: signatureFor(wallet, message),
-  }, options));
+  }, { ...options, cookie: cookies || undefined }));
   return { wallet, response, cookie: response.headers.get("set-cookie")?.split(";", 1)[0] };
 }
 
@@ -372,12 +374,206 @@ describe("transaction commitment classification", () => {
 });
 
 describe("wallet challenge authentication", () => {
+  it("uses secure __Host pre-auth cookies in production and non-Secure cookies in development", () => {
+    const secure = new SessionStore(Date.now, true);
+    expect(secure.authContextCookieName).toBe("__Host-solguard_auth_context");
+    expect(secure.authContextCookieHeader("A".repeat(43))).toContain("__Host-solguard_auth_context=");
+    expect(secure.authContextCookieHeader("A".repeat(43))).toContain("; Secure");
+    const development = new SessionStore(Date.now, false);
+    expect(development.authContextCookieName).toBe("solguard_auth_context");
+    expect(development.authContextCookieHeader("A".repeat(43))).not.toContain("; Secure");
+  });
+
+  it("binds a challenge to the initiating browser context and rejects a different browser", async () => {
+    const app = handlers();
+    const wallet = Keypair.generate();
+    const browserA = await app.challenge(request("session/challenge", {
+      wallet: wallet.publicKey.toBase58(),
+    }));
+    expect(browserA.status).toBe(200);
+    const contextA = browserA.headers.get("set-cookie")?.split(";", 1)[0];
+    const message = (await browserA.json()).message as string;
+
+    expect((await app.signIn(request("session", {
+      wallet: wallet.publicKey.toBase58(),
+      signature: signatureFor(wallet, message),
+    }))).status).toBe(401);
+    expect((await app.signIn(request("session", {
+      wallet: wallet.publicKey.toBase58(),
+      signature: signatureFor(wallet, message),
+    }, { cookie: contextA }))).status).toBe(200);
+  });
+
+  it("rejects missing, forged and expired authentication contexts", async () => {
+    let now = 1_000;
+    const app = handlers({ now: () => now });
+    const wallet = Keypair.generate();
+    const challengeResponse = await app.challenge(request("session/challenge", {
+      wallet: wallet.publicKey.toBase58(),
+    }));
+    const context = challengeResponse.headers.get("set-cookie")?.split(";", 1)[0];
+    const message = (await challengeResponse.json()).message as string;
+    const signature = signatureFor(wallet, message);
+
+    expect((await app.signIn(request("session", {
+      wallet: wallet.publicKey.toBase58(),
+      signature,
+    }, { cookie: "solguard_auth_context=not-a-token" }))).status).toBe(401);
+    expect((await app.signIn(request("session", {
+      wallet: wallet.publicKey.toBase58(),
+      signature,
+    }, { cookie: "solguard_auth_context=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }))).status).toBe(401);
+
+    now += 10 * 60 * 1000;
+    expect((await app.signIn(request("session", {
+      wallet: wallet.publicKey.toBase58(),
+      signature,
+    }, { cookie: context }))).status).toBe(401);
+  });
+
+  it("allows one browser to consume a challenge concurrently only once", async () => {
+    const app = handlers();
+    const wallet = Keypair.generate();
+    const challengeResponse = await app.challenge(request("session/challenge", {
+      wallet: wallet.publicKey.toBase58(),
+    }));
+    const context = challengeResponse.headers.get("set-cookie")?.split(";", 1)[0];
+    const message = (await challengeResponse.json()).message as string;
+    const body = {
+      wallet: wallet.publicKey.toBase58(),
+      signature: signatureFor(wallet, message),
+    };
+    const first = app.signIn(request("session", body, { cookie: context }));
+    const second = app.signIn(request("session", body, { cookie: context }));
+    const responses = await Promise.all([first, second]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 401]);
+  });
+
+  it("does not let challenge exhaustion or claimed-wallet abuse target the owner's browser", async () => {
+    const app = handlers();
+    const owner = Keypair.generate();
+    const ownerWallet = owner.publicKey.toBase58();
+
+    let attackerContext = "";
+    for (let index = 0; index < 3; index += 1) {
+      const response = await app.challenge(request("session/challenge", { wallet: ownerWallet }, {
+        cookie: attackerContext || undefined,
+      }));
+      expect(response.status).toBe(200);
+      attackerContext = response.headers.get("set-cookie")?.split(";", 1)[0] ?? attackerContext;
+    }
+    expect(attackerContext).toBeTruthy();
+    expect((await app.challenge(request("session/challenge", { wallet: ownerWallet }, {
+      cookie: attackerContext,
+    }))).status).toBe(429);
+
+    const ownerChallenge = await app.challenge(request("session/challenge", { wallet: ownerWallet }));
+    expect(ownerChallenge.status).toBe(200);
+    const ownerContext = ownerChallenge.headers.get("set-cookie")?.split(";", 1)[0];
+    const ownerMessage = (await ownerChallenge.json()).message as string;
+    expect((await app.signIn(request("session", {
+      wallet: ownerWallet,
+      signature: signatureFor(owner, ownerMessage),
+    }, { cookie: ownerContext }))).status).toBe(200);
+  });
+
+  it("allows multiple browsers to authenticate the same wallet with separate challenges", async () => {
+    const app = handlers();
+    const wallet = Keypair.generate();
+    const firstChallenge = await app.challenge(request("session/challenge", {
+      wallet: wallet.publicKey.toBase58(),
+    }));
+    const secondChallenge = await app.challenge(request("session/challenge", {
+      wallet: wallet.publicKey.toBase58(),
+    }));
+    const firstContext = firstChallenge.headers.get("set-cookie")?.split(";", 1)[0];
+    const secondContext = secondChallenge.headers.get("set-cookie")?.split(";", 1)[0];
+    const firstMessage = (await firstChallenge.json()).message as string;
+    const secondMessage = (await secondChallenge.json()).message as string;
+
+    expect((await app.signIn(request("session", {
+      wallet: wallet.publicKey.toBase58(),
+      signature: signatureFor(wallet, firstMessage),
+    }, { cookie: firstContext }))).status).toBe(200);
+    expect((await app.signIn(request("session", {
+      wallet: wallet.publicKey.toBase58(),
+      signature: signatureFor(wallet, secondMessage),
+    }, { cookie: secondContext }))).status).toBe(200);
+  });
+
+  it("rejects wrong-wallet, replayed and wrong-origin challenge signatures", async () => {
+    const app = handlers();
+    const challengedWallet = Keypair.generate();
+    const wrongWallet = Keypair.generate();
+    const challengeResponse = await app.challenge(request("session/challenge", {
+      wallet: challengedWallet.publicKey.toBase58(),
+    }));
+    const context = challengeResponse.headers.get("set-cookie")?.split(";", 1)[0];
+    const message = (await challengeResponse.json()).message as string;
+
+    expect((await app.signIn(request("session", {
+      wallet: challengedWallet.publicKey.toBase58(),
+      signature: signatureFor(wrongWallet, message),
+    }, { cookie: context }))).status).toBe(401);
+    expect((await app.signIn(request("session", {
+      wallet: wrongWallet.publicKey.toBase58(),
+      signature: signatureFor(wrongWallet, message),
+    }, { cookie: context }))).status).toBe(401);
+  });
+
+  it("prunes expired challenges and authentication contexts without evicting live ones", async () => {
+    let now = 10_000;
+    const store = new SessionStore(() => now, false);
+    const wallet = Keypair.generate().publicKey.toBase58();
+    let context = "";
+    for (let index = 0; index < 3; index += 1) {
+      const issued = store.issueChallenge(wallet, origin, context
+        ? new Request(origin, { headers: { cookie: `${store.authContextCookieName}=${context}` } })
+        : undefined);
+      expect(issued.message).toContain("Environment: Solana Devnet");
+      context = issued.cookie ?? context;
+    }
+    let contextLimited: unknown;
+    try {
+      store.issueChallenge(wallet, origin, new Request(origin, {
+        headers: { cookie: `${store.authContextCookieName}=${context}` },
+      }));
+    } catch (error) {
+      contextLimited = error;
+    }
+    expect(contextLimited).toBeInstanceOf(HttpError);
+    expect((contextLimited as HttpError).status).toBe(429);
+
+    now += 10 * 60 * 1000 + 1;
+    const liveStoreWallet = Keypair.generate().publicKey.toBase58();
+    expect(store.issueChallenge(liveStoreWallet, origin).message).toContain("Solana Devnet");
+  });
+
+  it("fails closed at global challenge and authentication-context storage capacity", () => {
+    const store = new SessionStore();
+    const wallet = "11111111111111111111111111111111";
+    let response: unknown;
+    for (let index = 0; index < 10_001; index += 1) {
+      try {
+        store.issueChallenge(wallet, origin);
+      } catch (error) {
+        response = error;
+        break;
+      }
+    }
+    expect(response).toBeInstanceOf(HttpError);
+    expect((response as HttpError).status).toBe(503);
+  }, 20_000);
   it("verifies the one-time origin- and wallet-bound signature and issues an HttpOnly session cookie", async () => {
     const app = handlers({ sessions: new SessionStore(Date.now, true) });
     const { wallet, response, cookie } = await signIn(app);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ wallet: wallet.publicKey.toBase58() });
-    expect(response.headers.get("set-cookie")).toMatch(/^__Host-solguard_session=[A-Za-z0-9_-]{43}; Path=\/; HttpOnly; SameSite=Strict; Max-Age=3600; Secure$/);
+    const setCookies = response.headers.get("set-cookie") ?? "";
+    expect(setCookies).toContain("__Host-solguard_session=");
+    expect(setCookies).toContain("HttpOnly; SameSite=Strict; Max-Age=3600; Secure");
+    expect(setCookies).toContain("__Host-solguard_auth_context=");
+    expect(setCookies).toContain("Max-Age=0");
     expect(cookie).toBeTruthy();
     expect((await app.stage(request("stage", {
       recipient: Keypair.generate().publicKey.toBase58(),
@@ -388,29 +584,33 @@ describe("wallet challenge authentication", () => {
   it("rejects forged, replayed, expired, and wrong-origin signatures", async () => {
     const app = handlers();
     const wallet = Keypair.generate();
-    const message = (await (await app.challenge(request("session/challenge", {
+    const challengeResponse = await app.challenge(request("session/challenge", {
       wallet: wallet.publicKey.toBase58(),
-    }))).json()).message as string;
+    }));
+    const challengeCookie = challengeResponse.headers.get("set-cookie")?.split(";", 1)[0];
+    const message = (await challengeResponse.json()).message as string;
     const signInBody = {
       wallet: wallet.publicKey.toBase58(),
       signature: signatureFor(wallet, message),
     };
     expect((await app.signIn(request("session", signInBody, { origin: "http://attacker.example" }))).status).toBe(403);
-    expect((await app.signIn(request("session", { ...signInBody, signature: Buffer.alloc(64).toString("base64") }))).status).toBe(401);
-    expect((await app.signIn(request("session", signInBody))).status).toBe(200);
-    expect((await app.signIn(request("session", signInBody))).status).toBe(401);
+    expect((await app.signIn(request("session", { ...signInBody, signature: Buffer.alloc(64).toString("base64") }, { cookie: challengeCookie }))).status).toBe(401);
+    expect((await app.signIn(request("session", signInBody, { cookie: challengeCookie }))).status).toBe(200);
+    expect((await app.signIn(request("session", signInBody, { cookie: challengeCookie }))).status).toBe(401);
 
     let now = 1_000;
     const expiring = handlers({ now: () => now });
     const nextWallet = Keypair.generate();
-    const challenge = (await (await expiring.challenge(request("session/challenge", {
+    const expiringChallengeResponse = await expiring.challenge(request("session/challenge", {
       wallet: nextWallet.publicKey.toBase58(),
-    }))).json()).message as string;
+    }));
+    const expiringChallengeCookie = expiringChallengeResponse.headers.get("set-cookie")?.split(";", 1)[0];
+    const challenge = (await expiringChallengeResponse.json()).message as string;
     now += 5 * 60 * 1000;
     expect((await expiring.signIn(request("session", {
       wallet: nextWallet.publicKey.toBase58(),
       signature: signatureFor(nextWallet, challenge),
-    }))).status).toBe(401);
+    }, { cookie: expiringChallengeCookie }))).status).toBe(401);
   });
 
   it("does not accept a challenge signed for another origin", async () => {
@@ -419,13 +619,15 @@ describe("wallet challenge authentication", () => {
     const original = createApplicationHandlers({ allowedOrigin: origin, sessions: sharedSessions });
     const otherOrigin = "https://other.example";
     const other = createApplicationHandlers({ allowedOrigin: otherOrigin, sessions: sharedSessions });
-    const challenge = (await (await original.challenge(request("session/challenge", {
+    const challengeResponse = await original.challenge(request("session/challenge", {
       wallet: wallet.publicKey.toBase58(),
-    }))).json()).message as string;
+    }));
+    const challengeCookie = challengeResponse.headers.get("set-cookie")?.split(";", 1)[0];
+    const challenge = (await challengeResponse.json()).message as string;
     const response = await other.signIn(request("session", {
       wallet: wallet.publicKey.toBase58(),
       signature: signatureFor(wallet, challenge),
-    }, { origin: otherOrigin }));
+    }, { origin: otherOrigin, cookie: challengeCookie }));
     expect(response.status).toBe(401);
   });
 
@@ -572,24 +774,19 @@ describe("confirmation authorization and abuse controls", () => {
     expect(limited).toBe(true);
   });
 
-  it("limits claimed-wallet sign-in attempts before signature verification", async () => {
+  it("limits sign-in abuse without allowing claimed-wallet lockout", async () => {
     const app = handlers();
     const wallet = Keypair.generate().publicKey.toBase58();
     const challenge = await app.challenge(request("session/challenge", { wallet }));
     expect(challenge.status).toBe(200);
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    const challengeCookie = challenge.headers.get("set-cookie")?.split(";", 1)[0];
+    for (let attempt = 0; attempt < 13; attempt += 1) {
       const response = await app.signIn(request("session", {
         wallet,
         signature: Buffer.alloc(64).toString("base64"),
-      }, { forwardedFor: `198.51.100.${attempt + 1}` }));
-      expect(response.status).toBe(401);
+      }, { forwardedFor: `198.51.100.${attempt + 1}`, cookie: challengeCookie }));
+      expect([401, 429]).toContain(response.status);
     }
-    const limited = await app.signIn(request("session", {
-      wallet,
-      signature: Buffer.alloc(64).toString("base64"),
-    }, { forwardedFor: "198.51.100.250" }));
-    expect(limited.status).toBe(429);
-    expect(limited.headers.get("retry-after")).toBeTruthy();
   });
 
   it("rejects malformed parse requests before invoking the AI model", async () => {

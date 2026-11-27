@@ -288,3 +288,66 @@ processing has the existing 30-second deadline; the broadcast deadline remains
 10 seconds. No test broadcasted funds or used a live wallet. Mocked RPC and
 controlled clocks exercise fork-sensitive status transitions but cannot prove
 all provider schedules or network behavior.
+
+## Authentication challenge browser binding
+
+The complete suite increased to 295 tests: 96 security, 93 agent and 106 web
+tests. Nine focused web tests were added for browser-context binding and
+challenge lifecycle boundaries.
+
+V8 coverage after the authentication changes:
+
+| Package | Statements | Branches | Functions | Lines |
+| --- | ---: | ---: | ---: | ---: |
+| Security engine | 92.03% | 88.95% | 96.07% | 93.84% |
+| AI agent | 99.31% | 97.97% | 100.00% | 99.15% |
+| Web application | 89.74% | 83.71% | 92.14% | 94.42% |
+
+The session-store scope is 91.50% statements, 84.53% branches, 100.00%
+functions and 96.62% lines. It remains below the 90% branch target; uncovered
+branches are mainly rare session expiry, context eviction and cookie-format
+combinations. Critical authentication decisions exercised by the suite include
+missing/forged/expired browser context, context-origin mismatch, expired
+challenges, incorrect wallet/signature, replay, concurrent consumption, wrong
+browser, same-wallet multiple browser contexts, targeted challenge abuse,
+per-context issuance limits, global storage exhaustion and cookie security
+attributes.
+
+The public challenge and sign-in endpoints no longer charge claimed-wallet
+quotas. A public wallet address is treated only as a draft input and never as
+proof of identity. Each browser context is limited to three outstanding
+challenges and both challenge and auth-context maps are capped at 10,000
+records. Failed authentication does not consume or evict the challenge.
+Successful authentication atomically consumes the matched challenge and
+invalidates that browser's auth context while preserving session rotation.
+
+Tests use ephemeral Ed25519 keys and deterministic cookie values. They do not
+test a real wallet extension or browser cookie jar, trusted ingress, process
+distribution or load behavior. Process-local auth-context and challenge maps
+do not protect against a distributed attacker across separate server instances;
+shared deployment affinity or storage remains required for stronger guarantees.
+
+## Authentication challenge browser binding
+
+The complete suite before this task was 286 tests (96 security, 93 agent,
+97 web). Authentication challenge hardening adds deterministic browser,
+expiry, replay, cross-wallet and storage-boundary coverage. The final test
+count will be recorded after the complete suite completes.
+
+The implementation adds a 10-minute opaque pre-authentication cookie. Every
+challenge is bound to that cookie's server record, the exact wallet, origin
+and `Solana Devnet` text. A browser context may hold three outstanding
+challenges. The challenge and authentication-context stores are both capped
+at 10,000 records. Challenge-generation public claimed-wallet quotas were
+removed because a public wallet address is not a verified identity and such a
+quota can deny authentication to that wallet. Global and per-context limits
+remain, as do public per-client and route quotas. Failed signatures do not
+consume or evict another challenge.
+
+Tested boundaries include missing/forged/expired context cookies, challenge
+expiry/replay, wrong wallet/signature/origin, concurrent consumption,
+same-wallet authentication from multiple contexts, targeted challenge abuse,
+per-context 429 behavior, global 503 storage exhaustion, context/pruning
+behavior, session rotation and logout. The tests use ephemeral Ed25519 keys
+and mock browser cookie values. They do not prove real wallet-extension,
+browser-cookie, ingress or process-distribution behavior.

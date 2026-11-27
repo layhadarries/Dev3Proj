@@ -5,7 +5,8 @@ import { HttpError } from "./http";
 
 const SESSION_TTL_MS = 60 * 60 * 1000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
-const MAX_ACTIVE_PER_WALLET = 5;
+const AUTH_CONTEXT_TTL_MS = 10 * 60 * 1000;
+const MAX_CHALLENGES_PER_CONTEXT = 3;
 const MAX_RECORDS = 10_000;
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -18,7 +19,14 @@ export interface AuthenticatedSession {
 interface Challenge {
   wallet: string;
   message: string;
+  contextId: string;
   expiresAt: number;
+}
+
+interface AuthContext {
+  contextId: string;
+  expiresAt: number;
+  origin: string;
 }
 
 interface SessionRecord extends AuthenticatedSession {
@@ -27,24 +35,49 @@ interface SessionRecord extends AuthenticatedSession {
 
 export class SessionStore {
   private readonly challenges = new Map<string, Challenge>();
+  private readonly authContexts = new Map<string, AuthContext>();
   private readonly sessions = new Map<string, SessionRecord>();
   readonly cookieName: string;
+  readonly authContextCookieName: string;
 
   constructor(
     private readonly now: () => number = Date.now,
     private readonly secureCookies = process.env.NODE_ENV === "production",
   ) {
     this.cookieName = secureCookies ? "__Host-solguard_session" : "solguard_session";
+    this.authContextCookieName = secureCookies
+      ? "__Host-solguard_auth_context"
+      : "solguard_auth_context";
   }
 
-  issueChallenge(wallet: string, origin: string): string {
+  issueChallenge(wallet: string, origin: string, request?: Request): { message: string; cookie?: string } {
     if (!Base58PubkeySchema.safeParse(wallet).success) throw new HttpError(400, "Invalid wallet address");
     this.prune();
-    const active = [...this.challenges.values()].filter((item) => item.wallet === wallet);
-    if (active.length >= MAX_ACTIVE_PER_WALLET) {
-      throw new HttpError(429, "Too many sign-in challenges", 60);
-    }
     if (this.challenges.size >= MAX_RECORDS) throw new HttpError(503, "Authentication is temporarily unavailable");
+
+    const existingContext = request
+      ? this.readCookieValue(request.headers.get("cookie") ?? "", this.authContextCookieName)
+      : undefined;
+    let context = existingContext ? this.authContexts.get(existingContext) : undefined;
+    if (context && (this.now() >= context.expiresAt || context.origin !== origin)) context = undefined;
+
+    let contextCookie: string | undefined;
+    if (!context) {
+      if (this.authContexts.size >= MAX_RECORDS) throw new HttpError(503, "Authentication is temporarily unavailable");
+      const contextId = randomBytes(32).toString("base64url");
+      context = {
+        contextId,
+        origin,
+        expiresAt: this.now() + AUTH_CONTEXT_TTL_MS,
+      };
+      this.authContexts.set(contextId, context);
+      contextCookie = contextId;
+    }
+
+    const activeForContext = [...this.challenges.values()].filter((item) => item.contextId === context.contextId);
+    if (activeForContext.length >= MAX_CHALLENGES_PER_CONTEXT) {
+      throw new HttpError(429, "Too many sign-in challenges for this browser", 60);
+    }
 
     const issuedAt = new Date(this.now()).toISOString();
     const nonce = randomBytes(24).toString("base64url");
@@ -52,11 +85,17 @@ export class SessionStore {
       "SolGuard Devnet sign-in",
       `Origin: ${origin}`,
       `Wallet: ${wallet}`,
+      "Environment: Solana Devnet",
       `Nonce: ${nonce}`,
       `Issued At: ${issuedAt}`,
     ].join("\n");
-    this.challenges.set(message, { wallet, message, expiresAt: this.now() + CHALLENGE_TTL_MS });
-    return message;
+    this.challenges.set(message, {
+      wallet,
+      message,
+      contextId: context.contextId,
+      expiresAt: this.now() + CHALLENGE_TTL_MS,
+    });
+    return { message, cookie: contextCookie };
   }
 
   authenticate(wallet: string, signatureBase64: string, origin: string, request?: Request): { cookie: string; session: AuthenticatedSession } {
@@ -70,7 +109,23 @@ export class SessionStore {
     }
 
     this.prune();
-    const candidates = [...this.challenges.entries()].filter(([, item]) => item.wallet === wallet);
+    const contextId = request
+      ? this.readCookieValue(request.headers.get("cookie") ?? "", this.authContextCookieName)
+      : undefined;
+    const context = contextId ? this.authContexts.get(contextId) : undefined;
+    if (
+      !context ||
+      this.now() >= context.expiresAt ||
+      context.origin !== origin
+    ) {
+      throw new HttpError(401, "Wallet authentication challenge is missing or expired");
+    }
+
+    const candidates = [...this.challenges.entries()].filter(([, item]) =>
+      item.wallet === wallet &&
+      item.contextId === contextId &&
+      item.message.includes(`Environment: Solana Devnet\n`)
+    );
     let matched: string | undefined;
     try {
       const key = createPublicKey({
@@ -90,9 +145,11 @@ export class SessionStore {
     if (this.sessions.size - replaced.length >= MAX_RECORDS) {
       throw new HttpError(503, "Sessions are temporarily unavailable");
     }
+    this.challenges.delete(matched);
     for (const [message, challenge] of this.challenges) {
-      if (challenge.wallet === wallet) this.challenges.delete(message);
+      if (challenge.contextId === contextId) this.challenges.delete(message);
     }
+    if (contextId) this.authContexts.delete(contextId);
     for (const [token] of replaced) this.sessions.delete(token);
 
     const cookie = randomBytes(32).toString("base64url");
@@ -124,6 +181,14 @@ export class SessionStore {
     return `${this.cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}${this.secureCookies ? "; Secure" : ""}`;
   }
 
+  authContextCookieHeader(token: string): string {
+    return `${this.authContextCookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${AUTH_CONTEXT_TTL_MS / 1000}${this.secureCookies ? "; Secure" : ""}`;
+  }
+
+  expiredAuthContextCookieHeader(): string {
+    return `${this.authContextCookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${this.secureCookies ? "; Secure" : ""}`;
+  }
+
   expiredCookieHeader(): string {
     return `${this.cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${this.secureCookies ? "; Secure" : ""}`;
   }
@@ -134,9 +199,13 @@ export class SessionStore {
   }
 
   private readCookie(header: string): string | undefined {
+    return this.readCookieValue(header, this.cookieName);
+  }
+
+  private readCookieValue(header: string, cookieName: string): string | undefined {
     for (const part of header.split(";")) {
       const separator = part.indexOf("=");
-      if (separator < 0 || part.slice(0, separator).trim() !== this.cookieName) continue;
+      if (separator < 0 || part.slice(0, separator).trim() !== cookieName) continue;
       const value = part.slice(separator + 1).trim();
       return /^[A-Za-z0-9_-]{43}$/.test(value) ? value : undefined;
     }
@@ -150,6 +219,9 @@ export class SessionStore {
     }
     for (const [token, session] of this.sessions) {
       if (now >= session.expiresAt) this.sessions.delete(token);
+    }
+    for (const [contextId, context] of this.authContexts) {
+      if (now >= context.expiresAt) this.authContexts.delete(contextId);
     }
   }
 }

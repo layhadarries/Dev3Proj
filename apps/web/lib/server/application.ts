@@ -464,26 +464,35 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
     challenge: (request: Request) =>
       invoke(request, "session/challenge", walletInput, {
         ...publicOptions,
-        walletLimit: 5,
-        claimedWallet: (input) => input.wallet,
-      }, (input, _session, origin) => ({
-        message: sessions.issueChallenge(input.wallet, origin),
-      })),
+      }, (input, _session, origin, currentRequest) => {
+        const issued = sessions.issueChallenge(input.wallet, origin, currentRequest);
+        const headers = new Headers({
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        });
+        if (issued.cookie) {
+          headers.set("set-cookie", sessions.authContextCookieHeader(issued.cookie));
+        }
+        return new Response(JSON.stringify({ message: issued.message }), {
+          status: 200,
+          headers,
+        });
+      }),
 
     signIn: (request: Request) =>
       invoke(request, "session", signInInput, {
         ...publicOptions,
-        walletLimit: 10,
-        claimedWallet: (input) => input.wallet,
       }, (input, _session, origin, currentRequest) => {
         const authenticated = sessions.authenticate(input.wallet, input.signature, origin, currentRequest);
+        const headers = new Headers({
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        });
+        headers.append("set-cookie", sessions.cookieHeader(authenticated.cookie));
+        headers.append("set-cookie", sessions.expiredAuthContextCookieHeader());
         return new Response(JSON.stringify({ wallet: authenticated.session.walletPublicKey }), {
           status: 200,
-          headers: {
-            "content-type": "application/json",
-            "cache-control": "no-store",
-            "set-cookie": sessions.cookieHeader(authenticated.cookie),
-          },
+          headers,
         });
       }),
 

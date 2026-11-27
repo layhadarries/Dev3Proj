@@ -113,8 +113,8 @@ The endpoint policy is:
 
 | Endpoint | Per-client fallback | Public / session / wallet limits | Per-process route quota | In-flight policy |
 | --- | ---: | --- | ---: | --- |
-| `/api/session/challenge` | 60/min | public 12/min; claimed wallet 5/min; session storage 5 active challenges per wallet | 120/min | — |
-| `/api/session` | 60/min | public 12/min; claimed wallet 10/min | 120/min | — |
+| `/api/session/challenge` | 60/min | public 12/min; 3 active challenges per browser context; challenge/context stores 10,000 records each | 120/min | — |
+| `/api/session` | 60/min | public 12/min; no claimed-wallet quota (wallet identity is unauthenticated until signature verification) | 120/min | — |
 | `/api/session/logout` | none | none; logout remains available | none | — |
 | `/api/parse` | 120/min per auth state | session 30/min; authenticated wallet 30/min | 60/min, authenticated only | AI/parse group 4, wallet 2; 16 total |
 | `/api/stage` | 120/min per auth state | session/wallet 20/min | 240/min, authenticated only | — |
@@ -129,8 +129,9 @@ Quota windows start with the first request for that key. Expiry allows a new
 window; the default limiter clock is monotonic, not wall-clock time. New keys
 cannot displace active keys. Expired entries are reclaimed incrementally;
 while the bounded store is full, new keys may receive 429 until reclamation
-reaches expired entries. Challenge/session stores remain capped at 10,000
-records, challenges at five per wallet, and the confirmation gateway at 2,048
+reaches expired entries. Challenge/session/authentication-context stores remain
+capped at 10,000 records, with at most three active challenges per browser
+context, and the confirmation gateway at 2,048
 records. The API body cap remains 32 KiB.
 
 The in-flight limiter reserves synchronously before invoking the AI, blockhash,
@@ -173,13 +174,26 @@ server initialization. Request bodies and AI output cannot change this policy.
 | `POST /api/handoff` | `{ id }` | `{ wire }` (base64 unsigned transaction) |
 | `POST /api/submit` | `{ id, signed }` | `{ signature }` |
 
-Challenges bind the wallet, origin, timestamp and a random nonce; their
-Ed25519 signatures are verified server-side and are single-use. The opaque
-session token is held in an in-memory server-side session and bound to that
-wallet and Devnet. A new successful sign-in revokes earlier sessions for the
-same wallet and the cookie presented by that browser; logout revokes the
-current token. Bodies are streamed with a 32 KiB cap and strict field
-validation. All public errors use `{ error }` without internal RPC details.
+Challenges use cryptographically random nonces and bind the wallet, exact
+application origin, timestamp and Solana Devnet environment. Challenge creation
+also creates or reuses a short-lived, HttpOnly, opaque pre-authentication
+cookie (`__Host-solguard_auth_context` in production). This cookie is
+SameSite=Strict and Secure in production; it is not a fingerprint or a
+user-controlled browser identifier. `/api/session` requires that cookie,
+and a challenge can be consumed only by the browser context that issued it.
+The context expires in 10 minutes and each context has at most three active
+challenges, preventing one browser from exhausting many challenges for a
+targeted wallet. A wallet itself has no outstanding-challenge allowance:
+different browsers may legitimately request challenges for the same wallet,
+and only bounded global/context storage limits apply.
+
+Ed25519 signatures are verified server-side and the exact matched challenge is
+single-use. Failed verification leaves other challenges and the browser context
+intact; success atomically consumes all outstanding challenges for that context
+and deletes the pre-auth context. A successful sign-in then revokes earlier
+sessions for the same wallet and the cookie presented by that browser; logout
+revokes the current token. Bodies are streamed with a 32 KiB cap and strict
+field validation. All public errors use `{ error }` without internal RPC details.
 Sessions and gateway records are process-local; use one Node process or
 session-affine routing, and expect a restart to invalidate pending sessions.
 
