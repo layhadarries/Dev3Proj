@@ -24,6 +24,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/node": "26.6.10",
     "fast-check": "^3.23.2",
     "vitest": "^3.0.7"
   }

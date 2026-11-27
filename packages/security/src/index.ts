@@ -13,3 +13,4 @@ export {
   verifySigned,
   type VerifyDeps,
 } from "./verification/verify.js";
+export { checkDevnetIdentity } from "./rpc/devnet.js";
