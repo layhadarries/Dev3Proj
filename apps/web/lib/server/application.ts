@@ -13,6 +13,8 @@ import { SessionStore } from "./sessions";
 const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com";
 const DEVNET_CONNECTION = new Connection(SOLANA_DEVNET_RPC, "confirmed");
 const MAX_SPEND_U64 = 0xffffffffffffffffn;
+const APPROVED_MAX_SPEND_LAMPORTS = 1_000_000_000n;
+const DEFAULT_SPEND_LIMIT = APPROVED_MAX_SPEND_LAMPORTS.toString(10);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function objectInput(input: unknown, keys: string[]): Record<string, unknown> {
@@ -89,9 +91,7 @@ function submitInput(input: unknown): { id: string; signed: string } {
 export interface ApplicationDependencies {
   allowedOrigin?: string;
   sessions?: SessionStore;
-  gateway?: ReturnType<typeof createConfirmationGateway>;
   rpc?: RpcClient;
-  maxSpendLamports?: bigint;
   rateLimiter?: RateLimiter;
   now?: () => number;
   llm?: ReturnType<typeof llmFromEnv>;
@@ -99,23 +99,27 @@ export interface ApplicationDependencies {
   submit?: (signedBytes: Uint8Array) => Promise<string>;
 }
 
-function configuredSpendLimit(explicit?: bigint): bigint | undefined {
-  if (explicit !== undefined) {
-    if (explicit < 0n || explicit > MAX_SPEND_U64) {
-      throw new Error("maxSpendLamports must be a non-negative u64 value");
-    }
-    return explicit;
-  }
-  const raw = process.env.SOLGUARD_MAX_SPEND_LAMPORTS;
-  if (raw === undefined) return undefined;
-  if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
-    throw new Error("SOLGUARD_MAX_SPEND_LAMPORTS must be a decimal u64 value");
+function configuredSpendLimit(): bigint {
+  const raw = process.env.SOLGUARD_MAX_SPEND_LAMPORTS ?? DEFAULT_SPEND_LIMIT;
+  if (raw.length > 20 || !/^(0|[1-9][0-9]*)$/.test(raw)) {
+    throw new Error("SOLGUARD_MAX_SPEND_LAMPORTS must be a canonical non-negative decimal u64 value");
   }
   const limit = BigInt(raw);
   if (limit > MAX_SPEND_U64) {
-    throw new Error("SOLGUARD_MAX_SPEND_LAMPORTS must be a decimal u64 value");
+    throw new Error("SOLGUARD_MAX_SPEND_LAMPORTS must be a canonical non-negative decimal u64 value");
   }
   return limit;
+}
+
+function currentGatewaySession(sessions: SessionStore, request: Request) {
+  try {
+    return sessions.resolve(request);
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 401) {
+      throw new Error("AUTHENTICATED_DEVNET_SESSION_REQUIRED");
+    }
+    throw error;
+  }
 }
 
 function routeError(error: unknown): Response {
@@ -132,11 +136,11 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
   const now = dependencies.now ?? Date.now;
   const sessions = dependencies.sessions ?? new SessionStore(now);
   const limiter = dependencies.rateLimiter ?? new RateLimiter(now);
-  const spendLimit = configuredSpendLimit(dependencies.maxSpendLamports);
+  const spendLimit = configuredSpendLimit();
   const securityRpc = dependencies.rpc ?? createDevnetRpc();
-  const gateway = dependencies.gateway ?? createConfirmationGateway({
+  const gateway = createConfirmationGateway({
     rpc: securityRpc,
-    maxSpendLamports: spendLimit ?? 0n,
+    maxSpendLamports: spendLimit,
   });
   const blockhash = dependencies.blockhash ?? (async () => {
     const recent = await getRecentBlockhash();
@@ -156,8 +160,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
     rpc: { getLatestBlockhash: blockhash },
     llm: dependencies.llm ?? llmFromEnv(process.env),
     confirmations: (request) => {
-      const current = sessions.resolve(request);
-      const resolve = () => current;
+      const resolve = () => currentGatewaySession(sessions, request);
       return {
         intent: (id) => gateway.intent(resolve, id),
         inspect: (id, proposal) => gateway.inspect(resolve, id, proposal),
@@ -245,26 +248,23 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
     stage: (request: Request) => {
       const { route, options } = protectedRoute("stage", 20);
-      return invoke(request, route, draftInput, options, (input, session) => {
+      return invoke(request, route, draftInput, options, (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
-        return gateway.stage(() => session, input);
+        return gateway.stage(() => currentGatewaySession(sessions, currentRequest), input);
       });
     },
 
     confirm: (request: Request) => {
       const { route, options } = protectedRoute("confirm", 12);
-      return invoke(request, route, idInput, options, (input, session) => {
+      return invoke(request, route, idInput, options, (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
-        return { intent: serializeIntent(gateway.confirm(() => session, input.id)) };
+        return { intent: serializeIntent(gateway.confirm(() => currentGatewaySession(sessions, currentRequest), input.id)) };
       });
     },
 
     build: (request: Request) => {
       const { route, options } = protectedRoute("build", 8);
       return invoke(request, route, buildInput, options, async (input) => {
-        if (spendLimit === undefined) {
-          throw new HttpError(503, "Transaction building is disabled until a server spending limit is configured");
-        }
         const forwarded = new Request(request.url, {
           method: "POST",
           headers: { "content-type": "application/json", cookie: request.headers.get("cookie") ?? "" },
@@ -287,32 +287,32 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
     acknowledge: (request: Request) => {
       const { route, options } = protectedRoute("acknowledge", 12);
-      return invoke(request, route, idInput, options, (input, session) => {
+      return invoke(request, route, idInput, options, (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
-        gateway.acknowledgeWarning(() => session, input.id);
+        gateway.acknowledgeWarning(() => currentGatewaySession(sessions, currentRequest), input.id);
         return { ok: true };
       });
     },
 
     handoff: (request: Request) => {
       const { route, options } = protectedRoute("handoff", 12);
-      return invoke(request, route, idInput, options, async (input, session) => {
+      return invoke(request, route, idInput, options, async (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
-        const wire = await gateway.handoff(() => session, input.id);
+        const wire = await gateway.handoff(() => currentGatewaySession(sessions, currentRequest), input.id);
         return { wire: Buffer.from(wire).toString("base64") };
       });
     },
 
     submit: (request: Request) => {
       const { route, options } = protectedRoute("submit", 8);
-      return invoke(request, route, submitInput, options, async (input, session) => {
+      return invoke(request, route, submitInput, options, async (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
         const signed = Buffer.from(input.signed, "base64");
         if (signed.toString("base64") !== input.signed || signed.length > 1232) {
           throw new HttpError(400, "Invalid signed transaction");
         }
         const signature = await gateway.submitAndConfirm(
-          () => session,
+          () => currentGatewaySession(sessions, currentRequest),
           input.id,
           signed,
           (snapshot) => submit(snapshot),

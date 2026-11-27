@@ -60,11 +60,10 @@ or trailing slash). Configure the ingress proxy to overwrite
 per-address rate limit. A process-wide public-auth limit and per-session limits
 also apply.
 
-Set `SOLGUARD_MAX_SPEND_LAMPORTS` to an explicitly approved decimal lamport
-limit for the **total debit including network fee**. There is intentionally no
-application default: if unset, `/api/build` returns 503 and transaction checks
-are disabled; malformed or out-of-u64 settings fail during server
-initialization. Do not enable the flow until the owner has selected this cap.
+`SOLGUARD_MAX_SPEND_LAMPORTS` is a server-only canonical decimal u64 setting
+for the **total debit including network fees**. It defaults to
+`1000000000` lamports (1 SOL); malformed or out-of-u64 values fail during
+server initialization. Request bodies and AI output cannot change this policy.
 
 | Route | Request | Response |
 | --- | --- | --- |
