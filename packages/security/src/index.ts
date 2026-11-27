@@ -5,6 +5,7 @@ export {
   type SecurityConfig,
 } from "./config/config.js";
 export { hashMessage } from "./integrity/hash.js";
+export { decodeTransaction, compareTransfer } from "./decoder/sol.js";
 export { aggregateVerdict } from "./policies/verdict.js";
 export type { RpcClient } from "./rpc/types.js";
 export {
