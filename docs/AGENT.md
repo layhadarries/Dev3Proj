@@ -30,6 +30,10 @@ export const POST = agentHandlers({
 }).parse;
 ```
 
+Export one handler per route file (`.parse`, `.build`, `.explain`). Tested on 27 November with
+Next.js 15.5.29 (`next build` and `next start`) against live Devnet and the local model. The app's
+`tsconfig.json` needs `"moduleResolution": "bundler"`; without it the package types are not found.
+
 ## Proposed changes to `packages/shared`
 
 Agreed by Taz on 27 November, not yet applied; the agent enforces the first three itself for now.
