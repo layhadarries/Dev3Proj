@@ -1,5 +1,9 @@
+import { performance } from "node:perf_hooks";
+
 export const MAX_BODY_BYTES = 32 * 1024;
 const WINDOW_MS = 60_000;
+const MAX_RATE_LIMIT_KEY_LENGTH = 256;
+const MAX_RECLAIM_PER_REQUEST = 32;
 
 export class HttpError extends Error {
   constructor(
@@ -13,25 +17,42 @@ export class HttpError extends Error {
 
 export class RateLimiter {
   private readonly buckets = new Map<string, { count: number; resetAt: number }>();
+  private sweepIterator: Iterator<string> | undefined;
 
   constructor(
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = () => performance.now(),
     private readonly maxBuckets = 10_000,
-  ) {}
+  ) {
+    if (!Number.isSafeInteger(maxBuckets) || maxBuckets < 1) {
+      throw new RangeError("Rate-limit bucket capacity must be a positive safe integer");
+    }
+  }
 
   take(key: string, limit: number, windowMs = WINDOW_MS): number | undefined {
+    if (
+      typeof key !== "string" ||
+      key.length === 0 ||
+      key.length > MAX_RATE_LIMIT_KEY_LENGTH ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      !Number.isSafeInteger(windowMs) ||
+      windowMs < 1
+    ) {
+      throw new RangeError("Invalid rate-limit policy");
+    }
     const now = this.now();
+    if (!Number.isFinite(now)) throw new Error("Rate-limit clock is unavailable");
+    this.reclaimExpired(now);
     let bucket = this.buckets.get(key);
     if (!bucket || now >= bucket.resetAt) {
       if (!bucket && this.buckets.size >= this.maxBuckets) {
-        for (const [candidate, value] of this.buckets) {
-          if (now >= value.resetAt) this.buckets.delete(candidate);
-        }
-        if (this.buckets.size >= this.maxBuckets) {
-          return Math.ceil(windowMs / 1000);
-        }
+        return Math.max(1, Math.ceil(windowMs / 1000));
       }
-      bucket = { count: 0, resetAt: now + windowMs };
+      const resetAt = now + windowMs;
+      if (!Number.isFinite(resetAt) || resetAt <= now) {
+        throw new Error("Rate-limit clock cannot represent the configured window");
+      }
+      bucket = { count: 0, resetAt };
       this.buckets.set(key, bucket);
     }
     if (bucket.count >= limit) {
@@ -39,6 +60,67 @@ export class RateLimiter {
     }
     bucket.count += 1;
     return undefined;
+  }
+
+  private reclaimExpired(now: number): void {
+    this.sweepIterator ??= this.buckets.keys();
+    for (let checked = 0; checked < MAX_RECLAIM_PER_REQUEST; checked += 1) {
+      const next = this.sweepIterator.next();
+      if (next.done) {
+        this.sweepIterator = this.buckets.keys();
+        return;
+      }
+      const bucket = this.buckets.get(next.value);
+      if (bucket && now >= bucket.resetAt) this.buckets.delete(next.value);
+    }
+  }
+}
+
+export class InFlightLimiter {
+  private readonly activeByKey = new Map<string, number>();
+  private active = 0;
+
+  constructor(private readonly maxActive = 16) {
+    if (!Number.isSafeInteger(maxActive) || maxActive < 1) {
+      throw new RangeError("In-flight capacity must be a positive safe integer");
+    }
+  }
+
+  tryAcquire(policies: readonly { key: string; limit: number }[]): (() => void) | undefined {
+    if (
+      policies.length === 0 ||
+      policies.some(({ key, limit }) =>
+        !key ||
+        key.length > MAX_RATE_LIMIT_KEY_LENGTH ||
+        !Number.isSafeInteger(limit) ||
+        limit < 1
+      ) ||
+      new Set(policies.map(({ key }) => key)).size !== policies.length
+    ) {
+      throw new RangeError("Invalid in-flight policy");
+    }
+    if (this.active >= this.maxActive || policies.some(({ key, limit }) =>
+      (this.activeByKey.get(key) ?? 0) >= limit
+    )) {
+      return undefined;
+    }
+
+    this.active += 1;
+    for (const { key } of policies) {
+      this.activeByKey.set(key, (this.activeByKey.get(key) ?? 0) + 1);
+    }
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active -= 1;
+      for (const { key } of policies) {
+        const remaining = (this.activeByKey.get(key) ?? 1) - 1;
+        if (remaining === 0) this.activeByKey.delete(key);
+        else this.activeByKey.set(key, remaining);
+      }
+    };
   }
 }
 
@@ -84,9 +166,9 @@ export function requireSameOrigin(request: Request, configuredOrigin?: string): 
 }
 
 export function clientAddress(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim();
-  const address = forwarded || request.headers.get("x-real-ip")?.trim() || "unknown";
-  return address.length <= 128 && /^[\da-fA-F.:]+$/.test(address) ? address : "unknown";
+  void request;
+  // Next.js Request has no verified peer address; forwarded headers are attacker-controlled.
+  return "unattributed";
 }
 
 export async function readJson<T>(

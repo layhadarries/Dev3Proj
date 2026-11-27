@@ -103,3 +103,64 @@ Passed after the final test additions:
 - `pnpm build`
 
 The coverage provider was added as a root development dependency at the same version as Vitest; no runtime dependency or application behavior was changed for coverage collection.
+
+## Rate-limit and resource-abuse hardening
+
+### Test count and coverage
+
+The rate-limit changes were measured against the synchronized 250-test suite:
+
+| Area | Before | After |
+| --- | ---: | ---: |
+| Security engine | 96 | 96 |
+| AI agent | 92 | 92 |
+| Web application | 62 | 71 |
+| **Total** | **250** | **259** |
+
+Coverage was collected with the existing V8 provider and the same complete
+source-file scope used above.
+
+| Package | Metric | Before | After |
+| --- | --- | ---: | ---: |
+| Security engine | Statements / branches / functions / lines | 92.03% / 88.95% / 96.07% / 93.84% | 92.03% / 88.95% / 96.07% / 93.84% |
+| AI agent | Statements / branches / functions / lines | 99.31% / 97.97% / 100.00% / 99.15% | 99.31% / 97.97% / 100.00% / 99.15% |
+| Web application | Statements / branches / functions / lines | 75.78% / 68.03% / 69.38% / 80.80% | 79.03% / 72.50% / 73.24% / 83.49% |
+
+| Rate-limit-related scope after changes | Statements | Branches | Functions | Lines |
+| --- | ---: | ---: | ---: | ---: |
+| HTTP limiter, in-flight limiter, and HTTP helpers | 97.74% | 95.68% | 94.44% | 99.17% |
+| Endpoint policies in the web application | 86.98% | 78.57% | 90.47% | 93.07% |
+| Web server and middleware | 90.84% | 84.01% | 92.78% | 95.19% |
+| Session store (unchanged) | 89.87% | 79.31% | 100.00% | 93.84% |
+
+The newly introduced limiter decisions exceed 90% branch coverage. The wider
+route-policy, web-server/middleware and session-store scopes remain below 90%
+branch coverage; their remaining untested branches include existing request
+handling and session-store paths as well as policy error combinations.
+
+### Scenarios and verification
+
+New deterministic tests cover spoofed and malformed forwarded headers,
+unattributed client identity, limiter boundary and storage-capacity behavior,
+monotonic-clock handling, incremental expiry, concurrent reservation and
+idempotent release, claimed-wallet abuse limits, wallet quota persistence
+across session rotation, global parse quotas across wallets, and preventing
+AI/RPC calls when quotas or concurrency caps reject a request. Tests use
+instrumented mocks and controlled promises; no real transaction was signed or
+submitted, and no live AI/RPC or load test was performed.
+
+Passed:
+
+- `pnpm test` — 259 tests (96 security, 92 agent, 71 web).
+- V8 coverage runs for all three tested packages.
+- `pnpm lint`, `pnpm typecheck`, and `pnpm build`.
+- `pnpm audit --audit-level high` — exit 0; four moderate dependency findings
+  remain, with no high-severity finding reported by this thresholded check.
+
+No dependency or environment-variable changes were made. No new vulnerability
+was demonstrated. The trusted client IP is unavailable through the current
+Next.js request boundary, so forwarded headers remain ignored and clients share
+a conservative fallback bucket. Rate-limit, session, and in-flight state are
+process-local: restarts clear quotas, multiple instances enforce independent
+limits, and this is not distributed DDoS protection. Limits are provisional
+single-instance MVP settings and have not been load-tested.
