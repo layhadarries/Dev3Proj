@@ -40,6 +40,7 @@ export function TransferApp() {
   const [error, setError] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [now, setNow] = useState(0);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
   // Bumped on every reset, so that late results from an abandoned request are ignored.
   const generation = useRef(0);
   const [submission, setSubmission] = useState<Submission>();
@@ -77,6 +78,30 @@ export function TransferApp() {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [step]);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("solguard_theme");
+      if (saved === "light" || saved === "dark") {
+        setTheme(saved);
+        return;
+      }
+      if (window.matchMedia?.("(prefers-color-scheme: light)").matches) {
+        setTheme("light");
+      }
+    } catch {
+      // Ignore storage access errors in restricted environments.
+    }
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem("solguard_theme", theme);
+    } catch {
+      // Ignore storage access errors in restricted environments.
+    }
+  }, [theme]);
 
   async function run<T>(label: string, work: (isCurrent: () => boolean) => Promise<T>, then: (result: T) => void) {
     const current = ++generation.current;
@@ -172,21 +197,46 @@ export function TransferApp() {
   const expired = deadline > 0 && now > 0 && secondsLeft === 0;
 
   return (
-    <main>
+    <main className="app-shell">
       <header>
-        <h1>SolGuard</h1>
-        <span className="badge">Solana Devnet only</span>
-        {address ? (
-          <span>
-            <code title={address}>{`${address.slice(0, 4)}…${address.slice(-4)}`}</code>{" "}
-            <button onClick={signOut} disabled={!!busy}>Sign out</button>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <path d="m9 12 2 2 4-4" />
+            </svg>
           </span>
-        ) : (
-          <button onClick={connect} disabled={!!busy}>Connect wallet</button>
-        )}
+          <div className="brand-text">
+            <h1>SolGuard</h1>
+            <p className="brand-subtitle">Intent-aware transaction firewall</p>
+          </div>
+          <span className="badge">Solana Devnet only</span>
+        </div>
+
+        <div className="header-actions">
+          <button
+            type="button"
+            className="btn-secondary theme-toggle"
+            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+          >
+            <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
+            <span>{theme === "dark" ? "Light" : "Dark"}</span>
+          </button>
+
+          {address ? (
+            <span className="wallet-pill">
+              <span className="wallet-dot" aria-hidden="true" />
+              <code title={address}>{`${address.slice(0, 4)}…${address.slice(-4)}`}</code>{" "}
+              <button className="btn-secondary btn-sm" onClick={signOut} disabled={!!busy}>Sign out</button>
+            </span>
+          ) : (
+            <button className="btn-primary" onClick={connect} disabled={!!busy}>Connect wallet</button>
+          )}
+        </div>
       </header>
 
-      <section>
+      <section className="card">
         <h2>1. Say what you want to send</h2>
         <textarea
           aria-label="Transfer request"
@@ -199,39 +249,43 @@ export function TransferApp() {
             if (step.name !== "ask") reset("The request changed.");
           }}
         />
-        <button
-          disabled={!address || !message.trim() || !!busy || unsettled}
-          onClick={() => {
-            // A settled result belongs to the previous transfer; do not show it beside a new one.
-            setSubmission(undefined);
-            void run("Reading your request", () => prepare(api, address!, message), (result) => {
-              setAcknowledged(false);
-              setStep(
-                "card" in result
-                  ? { name: "confirm", card: result.card, deadline: result.deadline }
-                  : { name: "ask", note: result.reason },
-              );
-            });
-          }}
-        >
-          Continue
-        </button>
-        {step.name === "ask" && step.note && <p role="status">{step.note}</p>}
+        <div className="actions">
+          <button
+            className="btn-primary"
+            disabled={!address || !message.trim() || !!busy || unsettled}
+            onClick={() => {
+              // A settled result belongs to the previous transfer; do not show it beside a new one.
+              setSubmission(undefined);
+              void run("Reading your request", () => prepare(api, address!, message), (result) => {
+                setAcknowledged(false);
+                setStep(
+                  "card" in result
+                    ? { name: "confirm", card: result.card, deadline: result.deadline }
+                    : { name: "ask", note: result.reason },
+                );
+              });
+            }}
+          >
+            Continue
+          </button>
+        </div>
+        {step.name === "ask" && step.note && <p className="note" role="status">{step.note}</p>}
       </section>
 
       {(step.name === "confirm" || step.name === "review") && (
-        <section>
+        <section className="card">
           <h2>2. Confirm the details</h2>
           <dl>
             <dt>Network</dt><dd>Devnet</dd>
             <dt>From</dt><dd>{step.card.wallet}</dd>
             <dt>To</dt><dd>{step.card.recipient}</dd>
             <dt>Amount</dt><dd>{lamportsToSol(step.card.amountBaseUnits)} SOL</dd>
-            <dt>Time left</dt><dd>{secondsLeft} s</dd>
+            <dt>Time left</dt><dd className={secondsLeft <= 15 ? "countdown-low" : ""}>{secondsLeft} s</dd>
           </dl>
           {step.name === "confirm" && (
-            <>
+            <div className="actions">
               <button
+                className="btn-primary"
                 disabled={!!busy || expired}
                 onClick={() =>
                   void run("Building and checking the transaction", () => confirmAndCheck(api, step.card), (review) =>
@@ -241,24 +295,24 @@ export function TransferApp() {
               >
                 These details are correct
               </button>{" "}
-              <button onClick={() => reset()}>Cancel</button>
-            </>
+              <button className="btn-secondary" onClick={() => reset()}>Cancel</button>
+            </div>
           )}
         </section>
       )}
 
       {step.name === "review" && (
-        <section className={step.review.explanation.verdict}>
+        <section className={`card ${step.review.explanation.verdict}`}>
           <h2>3. Security check: {step.review.explanation.verdict}</h2>
-          <p>{step.review.explanation.headline}</p>
-          <ul>
+          <p className="verdict-headline">{step.review.explanation.headline}</p>
+          <ul className="findings-list">
             {step.review.explanation.points.map((point, index) => (
               <li key={index}><strong>{point.ruleId}</strong>: {point.text}</li>
             ))}
           </ul>
           {step.review.explanation.balanceChanges.length > 0 && (
             <>
-              <p>Simulated balance changes (SOL)</p>
+              <p className="section-label">Simulated balance changes (SOL)</p>
               <dl>
                 {step.review.explanation.balanceChanges.filter((change) => !/^[+-]0$/.test(change.changeSol)).map((change) => (
                   <div key={change.account} className="contents">
@@ -268,55 +322,59 @@ export function TransferApp() {
               </dl>
             </>
           )}
-          {step.review.explanation.feeSol && <p>Network fee: {step.review.explanation.feeSol} SOL</p>}
+          {step.review.explanation.feeSol && <p className="fee-line">Network fee: <code>{step.review.explanation.feeSol} SOL</code></p>}
           {step.review.explanation.verdict === "WARN" && (
-            <p>
+            <p className="ack-box">
               <label>
                 <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />{" "}
                 I have read the warning and want to continue
               </label>
             </p>
           )}
-          {step.review.explanation.verdict !== "BLOCK" && (
-            <button
-              disabled={!!busy || expired || (step.review.explanation.verdict === "WARN" && !acknowledged)}
-              onClick={() => sign(step.review)}
-            >
-              Sign with wallet
-            </button>
-          )}{" "}
-          <button onClick={() => reset()}>Start again</button>
+          <div className="actions">
+            {step.review.explanation.verdict !== "BLOCK" && (
+              <button
+                className="btn-primary"
+                disabled={!!busy || expired || (step.review.explanation.verdict === "WARN" && !acknowledged)}
+                onClick={() => sign(step.review)}
+              >
+                Sign with wallet
+              </button>
+            )}{" "}
+            <button className="btn-secondary" onClick={() => reset()}>Start again</button>
+          </div>
         </section>
       )}
 
-      {expired && <p role="status">Time ran out. Start again.</p>}
+      {expired && <p className="status-banner expired" role="status">Time ran out. Start again.</p>}
 
       {submission && (
-        <section aria-live="polite" className={submission.state === "confirmed" ? "PASS" : submission.state === "sending" ? "" : "WARN"}>
+        <section aria-live="polite" className={`card ${submission.state === "confirmed" ? "PASS" : submission.state === "sending" ? "" : "WARN"}`}>
           <h2>{SUBMISSION_TITLE[submission.state]}</h2>
           {submission.note && submission.state !== "confirmed" && <p>{submission.note}</p>}
-          {(
-            <p>
-              <a href={`https://explorer.solana.com/tx/${encodeURIComponent(submission.signature)}?cluster=devnet`} target="_blank" rel="noreferrer">
-                View on Solana Explorer
-              </a>
-            </p>
-          )}
+          <p>
+            <a className="explorer-link" href={`https://explorer.solana.com/tx/${encodeURIComponent(submission.signature)}?cluster=devnet`} target="_blank" rel="noreferrer">
+              View on Solana Explorer
+            </a>
+          </p>
           {submission.state === "unknown" && (
-            <button
-              onClick={() => {
-                if (address) clearReceipt(browserStorage(), address, submission.signature);
-                setSubmission(undefined);
-              }}
-            >
-              I have checked Explorer
-            </button>
+            <div className="actions">
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  if (address) clearReceipt(browserStorage(), address, submission.signature);
+                  setSubmission(undefined);
+                }}
+              >
+                I have checked Explorer
+              </button>
+            </div>
           )}
         </section>
       )}
 
-      {busy && <p role="status">{busy}…</p>}
-      {error && <section className="error" role="alert">{error}</section>}
+      {busy && <p className="status-banner busy" role="status">{busy}…</p>}
+      {error && <section className="card error" role="alert">{error}</section>}
     </main>
   );
 }
