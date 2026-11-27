@@ -1,4 +1,4 @@
-import { Connection } from "@solana/web3.js";
+import { Connection, type SignatureStatus } from "@solana/web3.js";
 import {
   Base58PubkeySchema,
   PositiveBigIntWireSchema,
@@ -15,7 +15,67 @@ const DEVNET_CONNECTION = new Connection(SOLANA_DEVNET_RPC, "confirmed");
 const MAX_SPEND_U64 = 0xffffffffffffffffn;
 const APPROVED_MAX_SPEND_LAMPORTS = 1_000_000_000n;
 const DEFAULT_SPEND_LIMIT = APPROVED_MAX_SPEND_LAMPORTS.toString(10);
+const SIGNATURE_CONFIRMATION_TIMEOUT_MS = 30_000;
+const SIGNATURE_CONFIRMATION_POLL_MS = 500;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type SignatureConfirmation =
+  | { outcome: "confirmed" }
+  | { outcome: "failed" }
+  | { outcome: "unconfirmed"; reason: "timeout" | "rpc" };
+
+async function confirmSignature(
+  signature: string,
+  getStatus: (signature: string) => Promise<SignatureStatus | null>,
+  now: () => number,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<SignatureConfirmation> {
+  const deadline = now() + SIGNATURE_CONFIRMATION_TIMEOUT_MS;
+
+  while (now() < deadline) {
+    const remaining = deadline - now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let result:
+      | { kind: "status"; status: SignatureStatus | null }
+      | { kind: "rpc-error" }
+      | { kind: "timeout" };
+    try {
+      result = await Promise.race([
+        getStatus(signature).then(
+          (status) => ({ kind: "status" as const, status }),
+          () => ({ kind: "rpc-error" as const }),
+        ),
+        new Promise<{ kind: "timeout" }>((resolve) => {
+          timer = setTimeout(() => resolve({ kind: "timeout" }), remaining);
+        }),
+      ]);
+    } catch {
+      result = { kind: "rpc-error" };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+
+    if (result.kind === "timeout") return { outcome: "unconfirmed", reason: "timeout" };
+    if (result.kind === "rpc-error") return { outcome: "unconfirmed", reason: "rpc" };
+    if (result.status?.err !== undefined && result.status.err !== null) {
+      return { outcome: "failed" };
+    }
+    if (
+      result.status &&
+      (result.status.confirmationStatus === "confirmed" ||
+        result.status.confirmationStatus === "finalized" ||
+        result.status.confirmations === null)
+    ) {
+      return { outcome: "confirmed" };
+    }
+
+    const nextDelay = Math.min(SIGNATURE_CONFIRMATION_POLL_MS, deadline - now());
+    if (nextDelay <= 0) break;
+    await sleep(nextDelay);
+  }
+
+  return { outcome: "unconfirmed", reason: "timeout" };
+}
 
 function objectInput(input: unknown, keys: string[]): Record<string, unknown> {
   if (input === null || typeof input !== "object" || Array.isArray(input)) throw new Error("INVALID_INPUT");
@@ -97,6 +157,8 @@ export interface ApplicationDependencies {
   llm?: ReturnType<typeof llmFromEnv>;
   blockhash?: () => Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   submit?: (signedBytes: Uint8Array) => Promise<string>;
+  getSignatureStatus?: (signature: string) => Promise<SignatureStatus | null>;
+  sleep?: (milliseconds: number) => Promise<void>;
 }
 
 function configuredSpendLimit(): bigint {
@@ -156,6 +218,14 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
       maxRetries: 0,
       preflightCommitment: "confirmed",
     }));
+  const getSignatureStatus = dependencies.getSignatureStatus ?? (async (signature: string) => {
+    const { value } = await DEVNET_CONNECTION.getSignatureStatuses([signature], {
+      searchTransactionHistory: true,
+    });
+    return value[0] ?? null;
+  });
+  const sleep = dependencies.sleep ?? ((milliseconds: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const agent = agentHandlers({
     rpc: { getLatestBlockhash: blockhash },
     llm: dependencies.llm ?? llmFromEnv(process.env),
@@ -317,6 +387,19 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
           signed,
           (snapshot) => submit(snapshot),
         );
+        const confirmation = await confirmSignature(signature, getSignatureStatus, now, sleep);
+        if (confirmation.outcome === "failed") {
+          throw new HttpError(502, `Transaction failed on Devnet (signature: ${signature})`);
+        }
+        if (confirmation.outcome === "unconfirmed") {
+          const reason = confirmation.reason === "rpc"
+            ? "the Devnet RPC could not confirm it"
+            : "the confirmation timed out";
+          throw new HttpError(
+            504,
+            `Transaction is unconfirmed because ${reason} (signature: ${signature}). Do not submit again; check Devnet status.`,
+          );
+        }
         return { signature };
       });
     },
