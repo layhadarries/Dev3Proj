@@ -11,10 +11,15 @@ export class ApiError extends Error {
   }
 }
 
-export type Api = <T>(route: string, body: unknown) => Promise<T>;
+export type ApiValidator<T> = (value: unknown) => T;
+export type Api = <T>(
+  route: string,
+  body: unknown,
+  validate?: ApiValidator<T>,
+) => Promise<T>;
 
 export const createApi = (send: typeof fetch = (...args) => fetch(...args)): Api =>
-  async <T>(route: string, body: unknown) => {
+  async <T>(route: string, body: unknown, validate?: ApiValidator<T>) => {
     const response = await send(`/api/${route}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -27,5 +32,6 @@ export const createApi = (send: typeof fetch = (...args) => fetch(...args)): Api
       const explained = typeof error === "string";
       throw new ApiError(explained ? error : `${route} failed (HTTP ${response.status})`, response.status, explained);
     }
+    if (validate) return validate(data);
     return data as T;
   };

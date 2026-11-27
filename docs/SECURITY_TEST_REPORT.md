@@ -391,3 +391,56 @@ per-context 429 behavior, global 503 storage exhaustion, context/pruning
 behavior, session rotation and logout. The tests use ephemeral Ed25519 keys
 and mock browser cookie values. They do not prove real wallet-extension,
 browser-cookie, ingress or process-distribution behavior.
+
+## SG-01 submission receipt validation
+
+The original audited revision was `a9825ae0ae855c7d549ea52e0bf99b686e7e2b0d`.
+The synchronized remediation baseline is `3ffd70c6f0e064294047d32ec5352d73ca263f19`,
+followed by the SG-01 implementation commit on `feat/security-hardening`.
+
+Independent audit evidence was not available locally. The original failure
+was reproduced locally using an empty successful submit response and a
+mismatched signature. The previous UI could only become confirmed after the
+flow resolved; the remediation requires runtime validation before confirmation.
+
+The client now validates a strict `{ signature }` receipt. The signature must
+be a canonical Base58 string that decodes to exactly 64 bytes and equals the
+expected signature derived from the signed transaction before submission.
+Malformed JSON, empty bodies, missing/null/non-string signatures, arrays,
+objects, invalid Base58, wrong-length signatures, noncanonical encodings,
+unexpected envelopes and mismatched signatures are treated as unknown
+outcomes. The original signature, Explorer recovery link and unresolved
+submission guard are retained. No retry or rebroadcast is dispatched.
+
+Unit and browser verification used ephemeral keys and instrumented API
+responses. The production Chromium regression passed three scenarios:
+
+- Empty successful response: no "Confirmed on Devnet", unknown outcome,
+  expected Explorer link retained, Continue blocked and one submit call.
+- Structurally valid mismatched signature: no confirmation, unknown outcome,
+  expected Explorer link retained, Continue blocked and one submit call.
+- Matching 64-byte signature: legitimate confirmed state and one submit call.
+
+Browser harness: `apps/web/tests/browser-sg01.cjs`, run from `apps/web` with
+`pnpm browser:sg01`. It uses an injected ephemeral Phantom-compatible wallet
+and mocks the application API; it sends no real transaction or funds.
+
+The private audit archive and production-browser harness were not present
+locally. Therefore the independent audit reproduction itself was not rerun;
+the equivalent controlled Chromium and unit reproduction is recorded here.
+
+Final SG-01 verification:
+
+- Workspace tests: 317 passing (96 security, 93 agent, 128 web).
+- Web V8 coverage: 90.15% statements, 84.61% branches, 92.56% functions,
+  94.57% lines.
+- Security/agent coverage remained 92.03/88.95/96.07/93.84 and
+  99.32/97.97/100/99.16 respectively.
+- Production Chromium: 3/3 SG-01 scenarios passed: empty response,
+  mismatched signature and matching signature.
+- Each browser scenario observed exactly one submit dispatch.
+- No browser scenario displayed confirmation for an invalid/missing receipt.
+- `pnpm lint`, `pnpm typecheck`, `pnpm build` passed.
+- `pnpm audit --audit-level high` passed with four moderate findings and no
+  high-severity finding at this threshold.
+- Playwright 1.55.1 is a development-only browser test dependency.

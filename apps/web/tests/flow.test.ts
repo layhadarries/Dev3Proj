@@ -5,7 +5,8 @@ import bs58 from "bs58";
 import { describe, expect, it } from "vitest";
 import { ApiError, createApi, type Api } from "../lib/client/api";
 import {
-  confirmAndCheck, prepare, signAndSubmit, signIn, submissionOutcome, type Card, type Review, type SigningHooks,
+  confirmAndCheck, prepare, signAndSubmit, signIn, submissionOutcome,
+  validateSubmissionReceipt, type Card, type Review, type SigningHooks,
 } from "../lib/client/flow";
 import { lamportsToSol } from "../lib/client/format";
 import type { WalletProvider } from "../lib/client/wallet";
@@ -31,10 +32,13 @@ const review = (verdict: "PASS" | "WARN" | "BLOCK") =>
 
 function server(replies: Record<string, unknown>) {
   const calls: string[] = [];
-  const api: Api = async <T>(route: string) => {
+  const api: Api = async <T>(route: string, _body: unknown, validate?: (value: unknown) => T) => {
+    void _body;
+    void validate;
     calls.push(route);
     if (!(route in replies)) throw new Error(`unexpected ${route}`);
-    return replies[route] as T;
+    const reply = replies[route];
+    return validate ? validate(reply) : reply as T;
   };
   return { api, calls };
 }
@@ -211,6 +215,51 @@ describe("false confirmations", () => {
       expect(submissionOutcome(failure)).toBe("unknown");
     },
   );
+
+  it.each([
+    ["empty successful response", {}],
+    ["missing signature", { ok: true }],
+    ["null signature", { signature: null }],
+    ["numeric signature", { signature: 123 }],
+    ["boolean signature", { signature: true }],
+    ["array signature", { signature: [expectedSignature] }],
+    ["object signature", { signature: { value: expectedSignature } }],
+    ["empty signature", { signature: "" }],
+    ["invalid Base58", { signature: "0OIl" }],
+    ["wrong decoded length", { signature: bs58.encode(new Uint8Array(63).fill(1)) }],
+    ["valid different signature", { signature: bs58.encode(new Uint8Array(64).fill(7)) }],
+    ["unexpected envelope", { signature: expectedSignature, extra: true }],
+  ])("rejects %s without confirming", async (_name, reply) => {
+    const { api, calls } = server({ ...good, submit: reply });
+    let reported = "";
+    const hooks: SigningHooks = { isCurrent: () => true, onSubmit: (signature) => { reported = signature; } };
+    const failure = await signAndSubmit(api, wallet(), address, review("PASS"), false, hooks).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(reported).toBe(expectedSignature);
+    expect(calls).toEqual(["handoff", "submit"]);
+  });
+
+  it("rejects noncanonical Base58 signatures", () => {
+    const valid = bs58.decode(expectedSignature);
+    expect(() => validateSubmissionReceipt({ signature: `${bs58.encode(valid)}1` }, expectedSignature)).toThrow();
+  });
+
+  it("does not resubmit after a lost response", async () => {
+    const order: string[] = [];
+    const api: Api = async <T>(route: string, _body: unknown, validate?: (value: unknown) => T) => {
+      void _body;
+      void validate;
+      order.push(route);
+      if (route === "handoff") return { wire: unsignedWire(message) } as T;
+      if (route === "submit") throw new Error("lost response after dispatch");
+      throw new Error("unexpected");
+    };
+    let reported = "";
+    const hooks: SigningHooks = { isCurrent: () => true, onSubmit: (signature) => { reported = signature; } };
+    await expect(signAndSubmit(api, wallet(), address, review("PASS"), false, hooks)).rejects.toThrow("lost response");
+    expect(order).toEqual(["handoff", "submit"]);
+    expect(reported).toBe(expectedSignature);
+  });
 });
 
 describe("helpers", () => {
@@ -219,6 +268,25 @@ describe("helpers", () => {
     await expect(api("x", {})).rejects.toThrow("nope");
     const missing = createApi((async () => new Response("<html>", { status: 404 })) as typeof fetch);
     await expect(missing("x", {})).rejects.toMatchObject({ status: 404, message: "x failed (HTTP 404)" });
+  });
+  it("rejects empty and malformed success bodies before validation", async () => {
+    const empty = createApi((async () => new Response("", { status: 200 })) as typeof fetch);
+    await expect(empty("submit", {}, (value) => validateSubmissionReceipt(value, expectedSignature)))
+      .rejects.toMatchObject({ status: 200 });
+    const malformed = createApi((async () => new Response("{", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch);
+    await expect(malformed("submit", {}, (value) => validateSubmissionReceipt(value, expectedSignature)))
+      .rejects.toMatchObject({ status: 200 });
+  });
+  it("validates submission envelopes at createApi", async () => {
+    const invalid = createApi((async () => new Response(JSON.stringify({ signature: expectedSignature, extra: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch);
+    await expect(invalid("submit", {}, (value) => validateSubmissionReceipt(value, expectedSignature)))
+      .rejects.toThrow("unexpected");
   });
   it("formats lamports exactly", () => {
     expect(lamportsToSol("9007199254740993")).toBe("9007199.254740993");
