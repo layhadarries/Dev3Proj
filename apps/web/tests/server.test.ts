@@ -1,6 +1,6 @@
 import { createPrivateKey, randomUUID, sign } from "node:crypto";
-import { Keypair } from "@solana/web3.js";
-import { createConfirmationGateway } from "@solguard/security";
+import { Keypair, VersionedTransaction } from "@solana/web3.js";
+import { createConfirmationGateway, type RpcClient } from "@solguard/security";
 import { describe, expect, it, vi } from "vitest";
 import { createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
 import { RateLimiter } from "../lib/server/http";
@@ -226,5 +226,74 @@ describe("confirmation authorization and abuse controls", () => {
       signed: "not base64!",
     }, { cookie }))).status).toBe(400);
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("completes the server-owned flow through a mocked transport after gateway verification", async () => {
+    const owner = Keypair.generate();
+    const recipient = Keypair.generate().publicKey;
+    const blockhash = Keypair.generate().publicKey.toBase58();
+    const context = { slot: 100 };
+    const simulation = {
+      err: null,
+      fee: 5_000n,
+      preBalances: [10_000n, 2n, 1n],
+      postBalances: [4_992n, 10n, 1n],
+      accounts: [4_992n, 10n].map((lamports) => ({
+        owner: "11111111111111111111111111111111" as const,
+        executable: false as const,
+        lamports,
+        data: ["", "base64"] as ["", "base64"],
+      })),
+      innerInstructions: [],
+      preTokenBalances: [],
+      postTokenBalances: [],
+      replacementBlockhash: null,
+      logs: ["mock simulation"],
+      unitsConsumed: 150,
+    };
+    const rpc: RpcClient = {
+      identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
+      fresh: async (hash) => ({ network: "devnet", commitment: "confirmed", blockhash: hash, slot: 100n }),
+      fee: async () => ({ context, value: 5_000n }),
+      simulate: async () => ({ context, value: simulation }),
+    };
+    let signedSnapshot = Buffer.alloc(0);
+    const submit = vi.fn(async (bytes: Uint8Array) => {
+      signedSnapshot = Buffer.from(bytes);
+      return "mock-devnet-signature";
+    });
+    const app = handlers({
+      gateway: createConfirmationGateway({ rpc }),
+      blockhash: async () => ({ blockhash, lastValidBlockHeight: 123 }),
+      submit,
+    });
+    const { cookie } = await signIn(app, owner);
+    const staged = await app.stage(request("stage", {
+      recipient: recipient.toBase58(),
+      amountBaseUnits: "8",
+    }, { cookie }));
+    const card = await staged.json();
+    expect(staged.status).toBe(200);
+    expect((await app.confirm(request("confirm", { id: card.id }, { cookie }))).status).toBe(200);
+
+    const builtResponse = await app.build(request("build", { confirmationId: card.id }, { cookie }));
+    expect(builtResponse.status).toBe(200);
+    const { transaction, report } = await builtResponse.json();
+    expect(report.verdict).toBe("PASS");
+    const explanation = await app.explain(request("explain", report, { cookie }));
+    expect((await explanation.json()).verdict).toBe("PASS");
+
+    const handoff = await app.handoff(request("handoff", { id: card.id }, { cookie }));
+    expect(handoff.status).toBe(200);
+    const { wire } = await handoff.json();
+    const signed = VersionedTransaction.deserialize(Buffer.from(wire, "base64"));
+    expect(Buffer.from(signed.message.serialize()).toString("base64")).toBe(transaction.messageBase64);
+    signed.sign([owner]);
+    const signedBase64 = Buffer.from(signed.serialize()).toString("base64");
+    const submitted = await app.submit(request("submit", { id: card.id, signed: signedBase64 }, { cookie }));
+    expect(submitted.status).toBe(200);
+    expect(await submitted.json()).toEqual({ signature: "mock-devnet-signature" });
+    expect(signedSnapshot.toString("base64")).toBe(signedBase64);
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 });
