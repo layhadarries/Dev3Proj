@@ -7,7 +7,7 @@ import {
 } from "@solguard/shared";
 import { createConfirmationGateway, createDevnetRpc, getRecentBlockhash, type RpcClient } from "@solguard/security";
 import { agentHandlers, explainReport, llmFromEnv, parseTransfer } from "@solguard/agent";
-import { clientAddress, errorResponse, HttpError, jsonResponse, RateLimiter, readJson, requireSameOrigin } from "./http";
+import { clientAddress, errorResponse, HttpError, InFlightLimiter, jsonResponse, RateLimiter, readJson, requireSameOrigin } from "./http";
 import { SessionStore } from "./sessions";
 
 const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com";
@@ -182,6 +182,7 @@ export interface ApplicationDependencies {
   sessions?: SessionStore;
   rpc?: RpcClient;
   rateLimiter?: RateLimiter;
+  inFlightLimiter?: InFlightLimiter;
   now?: () => number;
   llm?: ReturnType<typeof llmFromEnv>;
   blockhash?: () => Promise<{ blockhash: string; lastValidBlockHeight: number }>;
@@ -226,7 +227,8 @@ function routeError(error: unknown): Response {
 export function createApplicationHandlers(dependencies: ApplicationDependencies = {}) {
   const now = dependencies.now ?? Date.now;
   const sessions = dependencies.sessions ?? new SessionStore(now);
-  const limiter = dependencies.rateLimiter ?? new RateLimiter(now);
+  const limiter = dependencies.rateLimiter ?? new RateLimiter();
+  const inFlight = dependencies.inFlightLimiter ?? new InFlightLimiter();
   const spendLimit = configuredSpendLimit();
   const securityRpc = dependencies.rpc ?? createDevnetRpc();
   const gateway = createConfirmationGateway({
@@ -271,15 +273,28 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
     request: Request,
     route: string,
     parse: (input: unknown) => T,
-    options: { public?: boolean; ipLimit?: number; sessionLimit?: number; globalLimit?: number } = {},
+    options: {
+      public?: boolean;
+      ipLimit?: number | false;
+      publicLimit?: number;
+      sessionLimit?: number;
+      walletLimit?: number;
+      claimedWallet?: (input: T) => string | undefined;
+      globalLimit?: number;
+      concurrencyGroup?: string;
+      concurrencyLimit?: number;
+      walletConcurrencyLimit?: number;
+    } = {},
     run: (input: T, session: ReturnType<SessionStore["resolve"]> | undefined, origin: string, request: Request) => Promise<unknown> | unknown,
   ): Promise<Response> {
     try {
       if (request.method !== "POST") throw new HttpError(405, "Method not allowed");
       const origin = requireSameOrigin(request, dependencies.allowedOrigin ?? process.env.APP_ORIGIN);
       const address = clientAddress(request);
-      const ipLimit = limiter.take(`ip:${address}:${route}`, options.ipLimit ?? 120);
-      if (ipLimit !== undefined) throw new HttpError(429, "Too many requests", ipLimit);
+      if (options.ipLimit !== false) {
+        const ipLimit = limiter.take(`client:${address}:${route}`, options.ipLimit ?? 120);
+        if (ipLimit !== undefined) throw new HttpError(429, "Too many requests", ipLimit);
+      }
       if (options.globalLimit !== undefined) {
         const globalLimit = limiter.take(`global:${route}`, options.globalLimit);
         if (globalLimit !== undefined) throw new HttpError(429, "Too many requests", globalLimit);
@@ -287,22 +302,52 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
       const input = await readJson(request, parse);
       const session = options.public ? undefined : sessions.resolve(request);
+      let wallet: string | undefined;
       if (session) {
         const sessionLimit = limiter.take(`session:${session.sessionId}:${route}`, options.sessionLimit ?? 30);
         if (sessionLimit !== undefined) throw new HttpError(429, "Too many requests", sessionLimit);
-      } else if (options.public) {
-        const publicLimit = limiter.take(`public:${address}:${route}`, options.sessionLimit ?? 12);
+        wallet = session.walletPublicKey;
+        const walletLimit = limiter.take(`wallet:${wallet}:${route}`, options.walletLimit ?? options.sessionLimit ?? 30);
+        if (walletLimit !== undefined) throw new HttpError(429, "Too many requests", walletLimit);
+      } else if (options.public && options.publicLimit !== undefined) {
+        const publicLimit = limiter.take(`public:${address}:${route}`, options.publicLimit);
         if (publicLimit !== undefined) throw new HttpError(429, "Too many requests", publicLimit);
       }
 
-      const result = await run(input, session, origin, request);
-      return result instanceof Response ? result : jsonResponse(result);
+      wallet ??= options.claimedWallet?.(input);
+      if (!session && wallet && options.walletLimit !== undefined) {
+        const walletLimit = limiter.take(`wallet:${wallet}:${route}`, options.walletLimit);
+        if (walletLimit !== undefined) throw new HttpError(429, "Too many requests", walletLimit);
+      }
+
+      let release: (() => void) | undefined;
+      if (options.concurrencyGroup) {
+        const policies = [
+          { key: "all-expensive-operations", limit: 16 },
+          { key: `operation:${options.concurrencyGroup}`, limit: options.concurrencyLimit ?? 4 },
+        ];
+        if (wallet) {
+          policies.push({
+            key: `wallet:${wallet}:operation:${options.concurrencyGroup}`,
+            limit: options.walletConcurrencyLimit ?? 2,
+          });
+        }
+        release = inFlight.tryAcquire(policies);
+        if (!release) throw new HttpError(429, "Too many requests", 1);
+      }
+
+      try {
+        const result = await run(input, session, origin, request);
+        return result instanceof Response ? result : jsonResponse(result);
+      } finally {
+        release?.();
+      }
     } catch (error) {
       return routeError(error);
     }
   }
 
-  const publicOptions = { public: true, ipLimit: 60, sessionLimit: 12, globalLimit: 120 };
+  const publicOptions = { public: true, ipLimit: 60, publicLimit: 12, globalLimit: 120 };
   const protectedRoute = (route: string, limit: number) => ({
     route,
     options: { sessionLimit: limit },
@@ -310,12 +355,20 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
   return {
     challenge: (request: Request) =>
-      invoke(request, "session/challenge", walletInput, publicOptions, (input, _session, origin) => ({
+      invoke(request, "session/challenge", walletInput, {
+        ...publicOptions,
+        walletLimit: 5,
+        claimedWallet: (input) => input.wallet,
+      }, (input, _session, origin) => ({
         message: sessions.issueChallenge(input.wallet, origin),
       })),
 
     signIn: (request: Request) =>
-      invoke(request, "session", signInInput, publicOptions, (input, _session, origin, currentRequest) => {
+      invoke(request, "session", signInInput, {
+        ...publicOptions,
+        walletLimit: 10,
+        claimedWallet: (input) => input.wallet,
+      }, (input, _session, origin, currentRequest) => {
         const authenticated = sessions.authenticate(input.wallet, input.signature, origin, currentRequest);
         return new Response(JSON.stringify({ wallet: authenticated.session.walletPublicKey }), {
           status: 200,
@@ -328,7 +381,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
       }),
 
     logout: (request: Request) =>
-      invoke(request, "session/logout", emptyInput, publicOptions, (_input, _session, _origin, currentRequest) => {
+      invoke(request, "session/logout", emptyInput, { public: true, ipLimit: false }, (_input, _session, _origin, currentRequest) => {
         sessions.revoke(currentRequest);
         return new Response(JSON.stringify({ ok: true }), {
           status: 200,
@@ -342,12 +395,19 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
     parse: (request: Request) => {
       const { route, options } = protectedRoute("parse", 30);
-      return invoke(request, route, parseInput, options, async (input) => parseTransfer(input.message, dependencies.llm ?? llmFromEnv(process.env)));
+      return invoke(request, route, parseInput, {
+        ...options,
+        walletLimit: 30,
+        globalLimit: 60,
+        concurrencyGroup: "parse",
+        concurrencyLimit: 4,
+        walletConcurrencyLimit: 2,
+      }, async (input) => parseTransfer(input.message, dependencies.llm ?? llmFromEnv(process.env)));
     },
 
     stage: (request: Request) => {
       const { route, options } = protectedRoute("stage", 20);
-      return invoke(request, route, draftInput, options, (input, session, _origin, currentRequest) => {
+      return invoke(request, route, draftInput, { ...options, globalLimit: 240 }, (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
         return gateway.stage(() => currentGatewaySession(sessions, currentRequest), input);
       });
@@ -355,7 +415,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
     confirm: (request: Request) => {
       const { route, options } = protectedRoute("confirm", 12);
-      return invoke(request, route, idInput, options, (input, session, _origin, currentRequest) => {
+      return invoke(request, route, idInput, { ...options, globalLimit: 240 }, (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
         return { intent: serializeIntent(gateway.confirm(() => currentGatewaySession(sessions, currentRequest), input.id)) };
       });
@@ -363,7 +423,14 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
     build: (request: Request) => {
       const { route, options } = protectedRoute("build", 8);
-      return invoke(request, route, buildInput, options, async (input) => {
+      return invoke(request, route, buildInput, {
+        ...options,
+        walletLimit: 8,
+        globalLimit: 30,
+        concurrencyGroup: "build",
+        concurrencyLimit: 4,
+        walletConcurrencyLimit: 2,
+      }, async (input) => {
         const forwarded = new Request(request.url, {
           method: "POST",
           headers: { "content-type": "application/json", cookie: request.headers.get("cookie") ?? "" },
@@ -381,12 +448,12 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
     explain: (request: Request) => {
       const { route, options } = protectedRoute("explain", 30);
-      return invoke(request, route, explainInput, options, (input) => explainReport(input));
+      return invoke(request, route, explainInput, { ...options, globalLimit: 300 }, (input) => explainReport(input));
     },
 
     acknowledge: (request: Request) => {
       const { route, options } = protectedRoute("acknowledge", 12);
-      return invoke(request, route, idInput, options, (input, session, _origin, currentRequest) => {
+      return invoke(request, route, idInput, { ...options, globalLimit: 120 }, (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
         gateway.acknowledgeWarning(() => currentGatewaySession(sessions, currentRequest), input.id);
         return { ok: true };
@@ -395,7 +462,14 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
     handoff: (request: Request) => {
       const { route, options } = protectedRoute("handoff", 12);
-      return invoke(request, route, idInput, options, async (input, session, _origin, currentRequest) => {
+      return invoke(request, route, idInput, {
+        ...options,
+        walletLimit: 12,
+        globalLimit: 60,
+        concurrencyGroup: "handoff",
+        concurrencyLimit: 8,
+        walletConcurrencyLimit: 2,
+      }, async (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
         const wire = await gateway.handoff(() => currentGatewaySession(sessions, currentRequest), input.id);
         return { wire: Buffer.from(wire).toString("base64") };
@@ -404,7 +478,14 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
 
     submit: (request: Request) => {
       const { route, options } = protectedRoute("submit", 8);
-      return invoke(request, route, submitInput, options, async (input, session, _origin, currentRequest) => {
+      return invoke(request, route, submitInput, {
+        ...options,
+        walletLimit: 8,
+        globalLimit: 30,
+        concurrencyGroup: "submit",
+        concurrencyLimit: 4,
+        walletConcurrencyLimit: 1,
+      }, async (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
         const signed = Buffer.from(input.signed, "base64");
         if (signed.toString("base64") !== input.signed || signed.length > 1232) {

@@ -3,7 +3,7 @@ import { Keypair, VersionedTransaction } from "@solana/web3.js";
 import type { RpcClient } from "@solguard/security";
 import { describe, expect, it, vi } from "vitest";
 import { createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
-import { RateLimiter } from "../lib/server/http";
+import { InFlightLimiter, RateLimiter } from "../lib/server/http";
 import { SessionStore } from "../lib/server/sessions";
 
 const origin = "http://localhost:3000";
@@ -36,11 +36,17 @@ function expectedSignature(signedBytes: Uint8Array): string {
   return base58Encode(signature);
 }
 
-function request(route: string, body: unknown, options: { cookie?: string; origin?: string; contentType?: string; fetchSite?: string } = {}) {
+function request(route: string, body: unknown, options: {
+  cookie?: string;
+  origin?: string;
+  contentType?: string;
+  fetchSite?: string;
+  forwardedFor?: string;
+} = {}) {
   const headers = new Headers({
     "content-type": options.contentType ?? "application/json",
     origin: options.origin ?? origin,
-    "x-forwarded-for": "192.0.2.10",
+    "x-forwarded-for": options.forwardedFor ?? "192.0.2.10",
   });
   if (options.cookie) headers.set("cookie", options.cookie);
   if (options.fetchSite) headers.set("sec-fetch-site", options.fetchSite);
@@ -395,10 +401,182 @@ describe("confirmation authorization and abuse controls", () => {
     for (let index = 0; index < 13; index += 1) {
       const response = await app.challenge(request("session/challenge", {
         wallet: Keypair.generate().publicKey.toBase58(),
-      }));
+      }, { forwardedFor: `198.51.100.${index + 1}` }));
       if (response.status === 429) limited = true;
     }
     expect(limited).toBe(true);
+  });
+
+  it("limits claimed-wallet sign-in attempts before signature verification", async () => {
+    const app = handlers();
+    const wallet = Keypair.generate().publicKey.toBase58();
+    const challenge = await app.challenge(request("session/challenge", { wallet }));
+    expect(challenge.status).toBe(200);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const response = await app.signIn(request("session", {
+        wallet,
+        signature: Buffer.alloc(64).toString("base64"),
+      }, { forwardedFor: `198.51.100.${attempt + 1}` }));
+      expect(response.status).toBe(401);
+    }
+    const limited = await app.signIn(request("session", {
+      wallet,
+      signature: Buffer.alloc(64).toString("base64"),
+    }, { forwardedFor: "198.51.100.250" }));
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBeTruthy();
+  });
+
+  it("rejects malformed parse requests before invoking the AI model", async () => {
+    let modelCalls = 0;
+    const app = handlers({
+      llm: {
+        complete: async () => {
+          modelCalls += 1;
+          return "{}";
+        },
+      },
+    });
+    const { cookie } = await signIn(app);
+    expect((await app.parse(request("parse", { message: 42 }, { cookie }))).status).toBe(400);
+    expect((await app.parse(request("parse", { message: "x".repeat(32 * 1024 + 1) }, { cookie }))).status).toBe(413);
+    expect(modelCalls).toBe(0);
+  });
+
+  it("keeps per-wallet parse quotas across session rotation and aggregates many wallets globally", async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    let modelCalls = 0;
+    const app = handlers({
+      llm: {
+        complete: async () => {
+          modelCalls += 1;
+          return JSON.stringify({ action: "transfer", asset: "SOL", amount: "0.5", recipient });
+        },
+      },
+    });
+    const first = await signIn(app);
+    const parse = (cookie: string, ip: number) => app.parse(request("parse", {
+      message: `could you move 0.5 SOL over to ${recipient} for me`,
+    }, { cookie, forwardedFor: `203.0.113.${ip}` }));
+
+    for (let index = 0; index < 30; index += 1) {
+      expect((await parse(first.cookie!, index + 1)).status).toBe(200);
+    }
+    expect(modelCalls).toBe(30);
+
+    const rotated = await signIn(app, first.wallet, { cookie: first.cookie });
+    const walletLimited = await parse(rotated.cookie!, 100);
+    expect(walletLimited.status).toBe(429);
+    expect(walletLimited.headers.get("retry-after")).toBeTruthy();
+    expect(modelCalls).toBe(30);
+
+    let globalModelCalls = 0;
+    const globalApp = handlers({
+      llm: {
+        complete: async () => {
+          globalModelCalls += 1;
+          return JSON.stringify({ action: "transfer", asset: "SOL", amount: "0.5", recipient });
+        },
+      },
+    });
+    const second = await signIn(globalApp);
+    for (let index = 0; index < 30; index += 1) {
+      expect((await globalApp.parse(request("parse", {
+        message: `could you move 0.5 SOL over to ${recipient} for me`,
+      }, { cookie: second.cookie, forwardedFor: `203.0.113.${index + 101}` }))).status).toBe(200);
+    }
+    const third = await signIn(globalApp);
+    for (let index = 0; index < 30; index += 1) {
+      expect((await globalApp.parse(request("parse", {
+        message: `could you move 0.5 SOL over to ${recipient} for me`,
+      }, { cookie: third.cookie, forwardedFor: `203.0.113.${index + 131}` }))).status).toBe(200);
+    }
+    const fourth = await signIn(globalApp);
+    const globalLimited = await globalApp.parse(request("parse", {
+      message: `could you move 0.5 SOL over to ${recipient} for me`,
+    }, { cookie: fourth.cookie, forwardedFor: "203.0.113.250" }));
+    expect(globalLimited.status).toBe(429);
+    expect(globalLimited.headers.get("retry-after")).toBeTruthy();
+    expect(globalModelCalls).toBe(60);
+  });
+
+  it("rejects excess concurrent AI work before model invocation and releases capacity after failure", async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const pause = deferredCall();
+    let modelCalls = 0;
+    const app = handlers({
+      inFlightLimiter: new InFlightLimiter(1),
+      llm: {
+        complete: async () => {
+          modelCalls += 1;
+          if (modelCalls === 1) {
+            await pause.wait();
+            throw new Error("mock model failure");
+          }
+          return JSON.stringify({ action: "transfer", asset: "SOL", amount: "0.5", recipient });
+        },
+      },
+    });
+    const { cookie } = await signIn(app);
+    const parseRequest = () => request("parse", {
+      message: `could you move 0.5 SOL over to ${recipient} for me`,
+    }, { cookie });
+
+    const first = app.parse(parseRequest());
+    await pause.entered;
+    const concurrent = await app.parse(parseRequest());
+    expect(concurrent.status).toBe(429);
+    expect(concurrent.headers.get("retry-after")).toBe("1");
+    expect(modelCalls).toBe(1);
+
+    pause.release();
+    expect((await first).status).toBe(200);
+    expect((await app.parse(parseRequest())).status).toBe(200);
+    expect(modelCalls).toBe(2);
+  });
+
+  it("rejects excess concurrent transaction builds before another RPC call", async () => {
+    const pause = deferredCall();
+    const rpc = verificationRpc(8n);
+    const simulate = vi.spyOn(rpc, "simulate");
+    let blockhashCalls = 0;
+    const blockhash = vi.fn(async () => ({
+      blockhash: await (async () => {
+        blockhashCalls += 1;
+        if (blockhashCalls === 1) {
+          await pause.wait();
+          throw new Error("mock RPC failure");
+        }
+        return Keypair.generate().publicKey.toBase58();
+      })(),
+      lastValidBlockHeight: 123,
+    }));
+    const app = handlers({ rpc, blockhash, inFlightLimiter: new InFlightLimiter(1) });
+    const { cookie } = await signIn(app);
+    const stageAndConfirm = async () => {
+      const staged = await app.stage(request("stage", {
+        recipient: Keypair.generate().publicKey.toBase58(),
+        amountBaseUnits: "8",
+      }, { cookie }));
+      const { id } = await staged.json();
+      expect((await app.confirm(request("confirm", { id }, { cookie }))).status).toBe(200);
+      return id as string;
+    };
+    const firstId = await stageAndConfirm();
+    const secondId = await stageAndConfirm();
+
+    const firstBuild = app.build(request("build", { confirmationId: firstId }, { cookie }));
+    await pause.entered;
+    const rejected = await app.build(request("build", { confirmationId: secondId }, { cookie }));
+    expect(rejected.status).toBe(429);
+    expect(blockhash).toHaveBeenCalledTimes(1);
+    expect(simulate).not.toHaveBeenCalled();
+
+    pause.release();
+    expect((await firstBuild).status).toBe(502);
+    expect((await app.build(request("build", { confirmationId: secondId }, { cookie }))).status).toBe(200);
+    expect(blockhash).toHaveBeenCalledTimes(2);
+    expect(simulate).toHaveBeenCalledTimes(1);
   });
 
   it("rejects malformed signed transaction input before transport", async () => {

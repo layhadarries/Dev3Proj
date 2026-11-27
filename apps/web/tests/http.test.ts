@@ -6,6 +6,7 @@ import {
   errorResponse,
   expectedOrigin,
   HttpError,
+  InFlightLimiter,
   jsonResponse,
   RateLimiter,
   readJson,
@@ -61,19 +62,90 @@ describe("HTTP security boundaries", () => {
   });
 
   it("uses only validated client address values", () => {
-    expect(clientAddress(request({ "x-forwarded-for": "192.0.2.1, 198.51.100.2" }))).toBe("192.0.2.1");
-    expect(clientAddress(request({ "x-real-ip": "2001:db8::1" }))).toBe("2001:db8::1");
-    expect(clientAddress(request({ "x-forwarded-for": "attacker", "x-real-ip": "192.0.2.2" }))).toBe("unknown");
-    expect(clientAddress(request())).toBe("unknown");
+    const identity = clientAddress(request());
+    const headerCases: HeadersInit[] = [
+      { "x-forwarded-for": "192.0.2.1" },
+      { "x-forwarded-for": "198.51.100.2, 192.0.2.1" },
+      { "x-forwarded-for": "2001:db8::1" },
+      { "x-forwarded-for": "2001:db8::1, [::1]" },
+      { "x-forwarded-for": "999.1.1.1" },
+      { "x-forwarded-for": "attacker", "x-real-ip": "192.0.2.2" },
+      { "x-real-ip": "2001:db8::1" },
+      { "x-forwarded-for": "x".repeat(4096) },
+    ];
+    for (const headers of headerCases) {
+      expect(clientAddress(request(headers))).toBe(identity);
+    }
+    expect(identity).toBe("unattributed");
   });
 
-  it("enforces rate limits at capacity and reclaims expired buckets", () => {
+  it("enforces rate limits at exact boundaries, rejects bad policies and recovers expired keys", () => {
     let now = 0;
-    const limiter = new RateLimiter(() => now, 1);
+    const limiter = new RateLimiter(() => now, 2);
     expect(limiter.take("one", 1)).toBeUndefined();
-    expect(limiter.take("two", 1)).toBe(60);
-    now += 60_000;
+    expect(limiter.take("one", 1)).toBe(60);
     expect(limiter.take("two", 1)).toBeUndefined();
+    expect(limiter.take("three", 1)).toBe(60);
+    now += 60_000;
+    expect(limiter.take("three", 1)).toBeUndefined();
+    expect(limiter.take("two", 1)).toBeUndefined();
+    expect(() => limiter.take("bad", 0)).toThrow(RangeError);
+    expect(() => limiter.take("x".repeat(257), 1)).toThrow(RangeError);
+    expect(() => limiter.take("bad", 1, 0)).toThrow(RangeError);
+    expect(() => new RateLimiter(() => now, 0)).toThrow(RangeError);
+  });
+
+  it("does not grant quota when its clock moves backwards", () => {
+    let now = 100;
+    const limiter = new RateLimiter(() => now, 1);
+    expect(limiter.take("wallet:a", 1, 1_000)).toBeUndefined();
+    now = 50;
+    expect(limiter.take("wallet:a", 1, 1_000)).toBe(2);
+  });
+
+  it("fails closed when the clock cannot represent a future quota window", () => {
+    const limiter = new RateLimiter(() => Number.MAX_VALUE);
+    expect(() => limiter.take("global", 1)).toThrow(/cannot represent/);
+  });
+
+  it("bounds and periodically reclaims limiter storage without evicting active quotas", () => {
+    let now = 0;
+    const limiter = new RateLimiter(() => now, 2);
+    expect(limiter.take("active", 2, 10_000)).toBeUndefined();
+    expect(limiter.take("expired-a", 1, 1)).toBeUndefined();
+    expect(limiter.take("new", 1, 1)).toBe(1);
+    now = 1;
+    expect(limiter.take("new", 1, 1)).toBeUndefined();
+    expect(limiter.take("active", 2, 10_000)).toBeUndefined();
+    expect(limiter.take("active", 2, 10_000)).toBe(10);
+  });
+
+  it("atomically caps in-flight work and releases once after completion or failure", () => {
+    const limiter = new InFlightLimiter(2);
+    const releaseFirst = limiter.tryAcquire([
+      { key: "all", limit: 2 },
+      { key: "parse", limit: 1 },
+    ]);
+    expect(releaseFirst).toBeTypeOf("function");
+    expect(limiter.tryAcquire([
+      { key: "all", limit: 2 },
+      { key: "parse", limit: 1 },
+    ])).toBeUndefined();
+    const releaseSecond = limiter.tryAcquire([
+      { key: "all", limit: 2 },
+      { key: "build", limit: 2 },
+    ]);
+    expect(releaseSecond).toBeTypeOf("function");
+    expect(limiter.tryAcquire([{ key: "all", limit: 2 }])).toBeUndefined();
+    releaseFirst?.();
+    releaseFirst?.();
+    expect(limiter.tryAcquire([
+      { key: "all", limit: 2 },
+      { key: "parse", limit: 1 },
+    ])).toBeTypeOf("function");
+    releaseSecond?.();
+    expect(() => new InFlightLimiter(0)).toThrow(RangeError);
+    expect(() => limiter.tryAcquire([{ key: "same", limit: 1 }, { key: "same", limit: 1 }])).toThrow(RangeError);
   });
 
   it("rejects malformed length and JSON while accepting valid JSON", async () => {
