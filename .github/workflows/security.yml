@@ -20,6 +20,8 @@ jobs:
       - run: npm install --global pnpm@12.23.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm build && pnpm typecheck && pnpm lint && pnpm test
+      - name: Run transaction security regression tests
+        run: pnpm --filter @solguard/web exec vitest run tests/flow.test.ts tests/receipts.test.ts tests/http.test.ts tests/server.test.ts
       - run: pnpm audit --audit-level high
   secrets:
     runs-on: ubuntu-latest
