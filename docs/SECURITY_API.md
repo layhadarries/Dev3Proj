@@ -49,6 +49,194 @@ need session affinity. Rate-limit staging per principal; the process cap is not
 a per-user quota. The gateway cannot enforce a user gesture by itself or
 prevent a wallet from submitting outside this service.
 
+## Web API routes
+
+`apps/web/app/api/[...path]/route.ts` exposes the UI's POST contract. Every
+route requires `application/json`, an exact `Origin` match and, when supplied,
+`Sec-Fetch-Site: same-origin`; the UI does not need a custom CSRF header.
+Production must set `APP_ORIGIN` to the canonical HTTPS origin (without a path
+or trailing slash). The current Next.js `Request` handler does not expose a
+verified socket peer address. Therefore the application **ignores**
+`X-Forwarded-For` and `X-Real-IP`; every request uses one conservative
+`unattributed` client bucket. Changing, chaining, malformed, IPv4, IPv6 or
+oversized forwarded-header values cannot change this identity. This can make
+the fallback limits shared by legitimate clients, but trusting a value the
+runtime cannot authenticate would let callers evade them.
+
+There is no trusted-proxy environment switch. Do not enable header-derived
+identity by setting a variable or by assuming a provider's defaults. If a
+future deployment adds reliable peer-address access, that integration must
+document and verify its exact ingress boundary first. Any proxy in front of
+this app should remove client-supplied forwarding headers and write its own
+values for other infrastructure that consumes them; these app limits do not
+trust or validate those values.
+
+### Rate limits and resource controls
+
+The server uses fixed 60-second per-process windows. Limits are reserved
+synchronously before any `await`; requests over a quota receive HTTP 429,
+`Retry-After` in seconds, and `Cache-Control: no-store`. The limiter is
+bounded to 10,000 keys, sweeps at most 32 entries per request, and never
+evicts a live quota to make room. If the store is full, a new identity fails
+closed with 429; existing identities retain their counters. Rate keys include
+only server-defined route names and validated session/wallet identities (or
+the constant `unattributed`), not arbitrary client header values.
+
+Public claimed-wallet limits use the validated wallet in the request only as
+an additional abuse signal; it is not authentication. Authenticated wallet
+limits use the wallet resolved from the server-side session and survive
+session rotation/logout/re-authentication. Per-session limits are retained as
+an additional layer.
+
+On non-public endpoints, the server validates the Origin and resolves the
+session before charging any authenticated-operation quota. A missing, invalid,
+revoked or expired session consumes only a separate per-route unauthenticated
+abuse bucket, then receives 401 (or 429 if that bucket is exhausted). It does
+not consume the authenticated client fallback, session, wallet, per-process
+route quota or in-flight capacity. A valid session is charged to its separate
+client fallback, then the body is parsed and schema-validated; only then are
+session, wallet and global operation quotas and any concurrency reservation
+charged. Malformed authenticated bodies therefore use only the authenticated
+client abuse bucket, not operation budgets. Public authentication endpoints
+retain their existing limits and ordering.
+
+The authenticated and unauthenticated client buckets both use the same
+conservative `unattributed` identity, but have separate keys and counters.
+Forwarded headers cannot move a request between or reset these buckets. This
+preserves bounded protection for unauthenticated traffic without allowing it
+to spend authenticated route budgets. Unauthenticated clients still share
+their fallback bucket with each other, and authenticated clients share their
+client fallback bucket with each other when a verified peer address is
+unavailable.
+
+The endpoint policy is:
+
+| Endpoint | Per-client fallback | Public / session / wallet limits | Per-process route quota | In-flight policy |
+| --- | ---: | --- | ---: | --- |
+| `/api/session/challenge` | 60/min | public 12/min; 3 active challenges per browser context; challenge/context stores 10,000 records each | 120/min | — |
+| `/api/session` | 60/min | public 12/min; no claimed-wallet quota (wallet identity is unauthenticated until signature verification) | 120/min | — |
+| `/api/session/logout` | none | none; logout remains available | none | — |
+| `/api/parse` | 120/min per auth state | session 30/min; authenticated wallet 30/min | 60/min, authenticated only | AI/parse group 4, wallet 2; 16 total |
+| `/api/stage` | 120/min per auth state | session/wallet 20/min | 240/min, authenticated only | — |
+| `/api/confirm` | 120/min per auth state | session/wallet 12/min | 240/min, authenticated only | — |
+| `/api/build` | 120/min per auth state | session/wallet 8/min | 30/min, authenticated only | build group 4, wallet 2; 16 total |
+| `/api/explain` | 120/min per auth state | session/wallet 30/min | 300/min, authenticated only | — |
+| `/api/acknowledge` | 120/min per auth state | session/wallet 12/min | 120/min, authenticated only | — |
+| `/api/handoff` | 120/min per auth state | session/wallet 12/min | 60/min, authenticated only | handoff/RPC group 8, wallet 2; 16 total |
+| `/api/submit` | 120/min per auth state | session/wallet 8/min | 30/min, authenticated only | submit/confirmation group 4, wallet 1; 16 total |
+
+Quota windows start with the first request for that key. Expiry allows a new
+window; the default limiter clock is monotonic, not wall-clock time. New keys
+cannot displace active keys. Expired entries are reclaimed incrementally;
+while the bounded store is full, new keys may receive 429 until reclamation
+reaches expired entries. Challenge/session/authentication-context stores remain
+capped at 10,000 records, with at most three active challenges per browser
+context, and the confirmation gateway at 2,048
+records. The API body cap remains 32 KiB.
+
+The in-flight limiter reserves synchronously before invoking the AI, blockhash,
+simulation, handoff freshness/fee checks, broadcast or confirmation polling.
+It limits the combined expensive work to 16 concurrent operations, with the
+lower per-operation and per-wallet limits in the table. No waiting queue is
+created; excess requests immediately receive 429 and `Retry-After: 1`.
+Reservations are released in `finally` on either success or failure, and
+release is idempotent. Transaction submission remains one-shot in the
+confirmation gateway; a rate limit or uncertain outcome does not trigger an
+automatic retry or a second broadcast.
+
+These are provisional single-instance MVP ceilings, selected to preserve the
+existing session/route limits while bounding aggregate expensive work. They
+have not been load-tested. Because state is process-local, each process has
+independent rate buckets and in-flight counts; restart clears them. Multiple
+instances can each enforce their own quotas, multiplying the effective
+aggregate allowance, and sessions/gateway state also require affinity. This
+is not distributed abuse prevention or infrastructure-level DDoS protection.
+Use one trusted Node process for the hackathon deployment; distributed
+coordination/shared storage and provider-specific trusted-IP integration are
+not implemented.
+
+`SOLGUARD_MAX_SPEND_LAMPORTS` is a server-only canonical decimal u64 setting
+for the **total debit including network fees**. It defaults to
+`1000000000` lamports (1 SOL); malformed or out-of-u64 values fail during
+server initialization. Request bodies and AI output cannot change this policy.
+
+| Route | Request | Response |
+| --- | --- | --- |
+| `POST /api/session/challenge` | `{ wallet }` | `{ message }` |
+| `POST /api/session` | `{ wallet, signature }` | `{ wallet }`, sets an HttpOnly, SameSite=Strict cookie |
+| `POST /api/session/logout` | `{}` | `{ ok: true }`, expires the current cookie |
+| `POST /api/parse` | `{ message }` | agent parse result |
+| `POST /api/stage` | `{ recipient, amountBaseUnits }` | server-owned confirmation card |
+| `POST /api/confirm` | `{ id }` | `{ intent }` |
+| `POST /api/build` | `{ confirmationId }` | `{ transaction, report }` |
+| `POST /api/explain` | the report object (not `{ report }`) | deterministic explanation |
+| `POST /api/acknowledge` | `{ id }` | `{ ok: true }` |
+| `POST /api/handoff` | `{ id }` | `{ wire }` (base64 unsigned transaction) |
+| `POST /api/submit` | `{ id, signed }` | `{ signature }` |
+
+Challenges use cryptographically random nonces and bind the wallet, exact
+application origin, timestamp and Solana Devnet environment. Challenge creation
+also creates or reuses a short-lived, HttpOnly, opaque pre-authentication
+cookie (`__Host-solguard_auth_context` in production). This cookie is
+SameSite=Strict and Secure in production; it is not a fingerprint or a
+user-controlled browser identifier. `/api/session` requires that cookie,
+and a challenge can be consumed only by the browser context that issued it.
+The context expires in 10 minutes and each context has at most three active
+challenges, preventing one browser from exhausting many challenges for a
+targeted wallet. A wallet itself has no outstanding-challenge allowance:
+different browsers may legitimately request challenges for the same wallet,
+and only bounded global/context storage limits apply.
+
+Ed25519 signatures are verified server-side and the exact matched challenge is
+single-use. Failed verification leaves other challenges and the browser context
+intact; success atomically consumes all outstanding challenges for that context
+and deletes the pre-auth context. A successful sign-in then revokes earlier
+sessions for the same wallet and the cookie presented by that browser; logout
+revokes the current token. Bodies are streamed with a 32 KiB cap and strict
+field validation. All public errors use `{ error }` without internal RPC details.
+Sessions and gateway records are process-local; use one Node process or
+session-affine routing, and expect a restart to invalidate pending sessions.
+
+The web submit transport is pinned to `https://api.devnet.solana.com`. It
+forwards only the exact signed bytes after `submitAndConfirm` verifies the
+signature and transaction. Do not configure this demo for mainnet or use
+funded wallets.
+
+The successful submit response is a strict `{ signature }` envelope. The
+client validates that the signature is canonical Base58, decodes to exactly
+64 bytes, and exactly matches the signature derived from the exact signed
+transaction before displaying confirmed status. Missing, malformed,
+mismatched or unexpected receipts are insufficient confirmation evidence:
+the client retains the locally derived signature, the Devnet Explorer recovery
+link and an unknown-outcome state. They do not trigger a retransmission.
+
+The initial `sendRawTransaction` broadcast has a 10-second application-level
+deadline. The Solana `@solana/web3.js` `Connection.sendRawTransaction` API used
+here does not expose an AbortSignal or other request-cancellation handle.
+Application timeouts therefore cannot guarantee that an underlying HTTP/RPC
+request was never accepted or that it stopped after the deadline. A timed-out,
+thrown or mismatched broadcast is reconciled once against the signature derived
+from the exact verified signed bytes; the server never reconstructs or
+automatically resends the transaction. The reconciliation polling remains
+bounded to 30 seconds. RPC errors, reconciliation timeout, unknown status and
+signature mismatch are returned as uncertain 504 outcomes and instruct the
+client not to submit again. Only an on-chain status with confirmed/finalized
+commitment and no error is reported as success. Underlying RPC promises that
+resolve or reject after the application deadline are observed and handled
+without an automatic retry or resubmission.
+
+Signature status classification is commitment-aware. `processed` is always
+provisional: an error or successful balance path observed at `processed` is
+continued until a confirmed/finalized status or the 30-second deadline. A
+transaction that disappears between RPC polls remains unknown and does not
+become success or failure. Only confirmed/finalized status with valid error
+evidence is definitive: `err: null` is success and a structured on-chain error
+is failure. Malformed commitment names, contradictory counts or slots,
+missing `err` evidence, and ambiguous RPC responses are polled or timed out
+rather than guessed. The legacy `confirmations === null` fallback is used only
+when no explicit commitment metadata exists; explicit `processed`,
+`confirmed`, or `finalized` information is never overridden by that fallback.
+
 ## Low-level verification (diagnostics and standalone demo)
 
 These primitives are not a substitute for the gateway in application routes:

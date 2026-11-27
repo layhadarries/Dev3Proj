@@ -11,12 +11,30 @@ export interface OpenAiCompatibleOptions {
   fetch?: typeof fetch;
 }
 
+/** Far above a 300-token reply with its envelope. */
+export const MAX_REPLY_BYTES = 64 * 1024;
+
+async function readBounded(response: Response): Promise<string> {
+  // Count the bytes as they arrive, because Content-Length may be missing or wrong.
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of response.body ?? []) {
+    size += chunk.byteLength;
+    // Leaving the loop cancels the rest of the stream.
+    if (size > MAX_REPLY_BYTES) throw new Error("LLM response was too large");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export function openAiCompatibleClient(options: OpenAiCompatibleOptions): LlmClient {
   const doFetch = options.fetch ?? fetch;
   return {
     async complete(system, user) {
       const response = await doFetch(`${options.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
         method: "POST",
+        // A redirect would send the user's text to a destination nobody configured.
+        redirect: "error",
         headers: { "content-type": "application/json", authorization: `Bearer ${options.apiKey}` },
         body: JSON.stringify({
           model: options.model,
@@ -28,11 +46,12 @@ export function openAiCompatibleClient(options: OpenAiCompatibleOptions): LlmCli
             { role: "user", content: user },
           ],
         }),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+        // A small model on a busy laptop CPU can take longer than half a minute.
+        signal: AbortSignal.timeout(options.timeoutMs ?? 60_000),
       });
       // The response body is deliberately left out of the error: it can echo request data.
       if (!response.ok) throw new Error(`LLM request failed with HTTP ${response.status}`);
-      const body = (await response.json()) as { choices?: { message?: { content?: unknown } }[] };
+      const body = JSON.parse(await readBounded(response)) as { choices?: { message?: { content?: unknown } }[] };
       const content = body.choices?.[0]?.message?.content;
       if (typeof content !== "string") throw new Error("LLM response had no text content");
       return content;

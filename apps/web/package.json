@@ -1,0 +1,31 @@
+{
+  "name": "@solguard/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "start": "next start",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "browser:sg01": "node tests/browser-sg01.cjs"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "@solguard/agent": "workspace:*",
+    "@solguard/security": "workspace:*",
+    "@solguard/shared": "workspace:*",
+    "bs58": "^6.0.0",
+    "next": "^15.5.29",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.10",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "playwright": "1.55.1",
+    "vitest": "4.1.12"
+  }
+}
