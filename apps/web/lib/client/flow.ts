@@ -89,10 +89,13 @@ export async function confirmAndCheck(api: Api, card: Card, now: () => number = 
 
 export type SubmissionOutcome = "confirmed" | "failed" | "not_sent" | "unknown";
 
+/** Statuses with which this app refuses a submission before sending anything. */
+const REFUSED_BEFORE_SENDING = new Set([400, 401, 403, 409, 413, 415, 429]);
+
 /** Decides what a failed submit request means. Anything unclear counts as possibly sent. */
 export function submissionOutcome(error: unknown): SubmissionOutcome {
   if (!(error instanceof ApiError)) return "unknown";
-  if (error.status >= 400 && error.status < 500) return "not_sent";
+  if (error.explained && REFUSED_BEFORE_SENDING.has(error.status)) return "not_sent";
   return /failed on Devnet/.test(error.message) ? "failed" : "unknown";
 }
 
