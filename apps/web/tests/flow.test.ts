@@ -1,6 +1,7 @@
 import {
   ComputeBudgetProgram, Keypair, SystemProgram, Transaction, VersionedMessage, VersionedTransaction,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 import { describe, expect, it } from "vitest";
 import { ApiError, createApi, type Api } from "../lib/client/api";
 import {
@@ -53,7 +54,11 @@ function wallet(tamper = false): WalletProvider & { signed: number } {
 }
 const sent: string[] = [];
 const live: SigningHooks = { isCurrent: () => true, onSubmit: (signature) => sent.push(signature) };
-const good = { handoff: { wire: unsignedWire(message) }, acknowledge: { ok: true }, submit: { signature: "sig" } };
+// Ed25519 signatures are deterministic, so the expected one can be computed in advance.
+const signedOnce = new VersionedTransaction(VersionedMessage.deserialize(message));
+signedOnce.sign([owner]);
+const expectedSignature = bs58.encode(signedOnce.signatures[0]!);
+const good = { handoff: { wire: unsignedWire(message) }, acknowledge: { ok: true }, submit: { signature: expectedSignature } };
 
 describe("sign in", () => {
   it("signs the server's challenge", async () => {
@@ -102,7 +107,7 @@ describe("confirm and check", () => {
 describe("sign and submit", () => {
   it("signs the handed-off message and submits it", async () => {
     const { api, calls } = server(good);
-    expect(await signAndSubmit(api, wallet(), address, review("PASS"), false, live)).toBe("sig");
+    expect(await signAndSubmit(api, wallet(), address, review("PASS"), false, live)).toBe(expectedSignature);
     expect(calls).toEqual(["handoff", "submit"]);
   });
   it("never signs a blocked transaction", async () => {
@@ -191,6 +196,21 @@ describe("abandoning and tracking a submission", () => {
   ])("classifies %s", (error, outcome) => {
     expect(submissionOutcome(error)).toBe(outcome);
   });
+});
+
+describe("false confirmations", () => {
+  it.each([{}, { signature: "" }, { signature: "someone-else" }, { ok: true }])(
+    "does not treat %j as success",
+    async (reply) => {
+      const { api } = server({ ...good, submit: reply });
+      let reported = "";
+      const hooks: SigningHooks = { isCurrent: () => true, onSubmit: (s) => (reported = s) };
+      const failure = await signAndSubmit(api, wallet(), address, review("PASS"), false, hooks).catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(Error);
+      expect(reported).not.toBe("");
+      expect(submissionOutcome(failure)).toBe("unknown");
+    },
+  );
 });
 
 describe("helpers", () => {

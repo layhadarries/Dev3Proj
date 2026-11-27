@@ -160,7 +160,12 @@ export async function signAndSubmit(
   assertCurrent();
   const first = signed.signatures[0];
   if (!first || first.every((byte) => byte === 0)) throw new Error("The wallet did not sign the transaction.");
-  hooks.onSubmit(bs58.encode(first));
+  const expectedSignature = bs58.encode(first);
+  hooks.onSubmit(expectedSignature);
   const { signature } = await api<{ signature: string }>("submit", { id: review.id, signed: base64(signed.serialize()) });
+  // A success reply counts only if it names the transaction that was just signed.
+  if (signature !== expectedSignature) {
+    throw new Error("The server's reply does not match the signed transaction. Check Explorer before sending again.");
+  }
   return signature;
 }
