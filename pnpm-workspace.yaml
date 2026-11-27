@@ -5,4 +5,8 @@ allowBuilds:
   bigint-buffer: true
   bufferutil: true
   esbuild: true
+  sharp: false
   utf-8-validate: true
+overrides:
+  # next pins a postcss with two high-severity advisories.
+  "next>postcss": "^8.5.18"
