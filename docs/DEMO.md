@@ -57,5 +57,6 @@ The output is JSON; point at `verdict` and `findings`.
 ## Fallbacks
 
 - Public Devnet RPC slow or rate-limited: run Part 2 later, or show a recorded run.
-- Model slow (about 7-25 s on a laptop CPU): use the `send ... to ...` form, which is instant.
+- Model slow (about 7-30 s on a laptop CPU, more when it is busy; it gives up after 60 s): close
+  heavy programs, or use the `send ... to ...` form, which is instant.
 - Restarting the app signs everyone out; reload and connect again.

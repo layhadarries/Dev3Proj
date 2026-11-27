@@ -30,7 +30,8 @@ export function openAiCompatibleClient(options: OpenAiCompatibleOptions): LlmCli
             { role: "user", content: user },
           ],
         }),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+        // A small model on a busy laptop CPU can take longer than half a minute.
+        signal: AbortSignal.timeout(options.timeoutMs ?? 60_000),
       });
       // The response body is deliberately left out of the error: it can echo request data.
       if (!response.ok) throw new Error(`LLM request failed with HTTP ${response.status}`);
