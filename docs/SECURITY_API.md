@@ -60,10 +60,16 @@ or trailing slash). Configure the ingress proxy to overwrite
 per-address rate limit. A process-wide public-auth limit and per-session limits
 also apply.
 
+`SOLGUARD_MAX_SPEND_LAMPORTS` is a server-only canonical decimal u64 setting
+for the **total debit including network fees**. It defaults to
+`1000000000` lamports (1 SOL); malformed or out-of-u64 values fail during
+server initialization. Request bodies and AI output cannot change this policy.
+
 | Route | Request | Response |
 | --- | --- | --- |
 | `POST /api/session/challenge` | `{ wallet }` | `{ message }` |
 | `POST /api/session` | `{ wallet, signature }` | `{ wallet }`, sets an HttpOnly, SameSite=Strict cookie |
+| `POST /api/session/logout` | `{}` | `{ ok: true }`, expires the current cookie |
 | `POST /api/parse` | `{ message }` | agent parse result |
 | `POST /api/stage` | `{ recipient, amountBaseUnits }` | server-owned confirmation card |
 | `POST /api/confirm` | `{ id }` | `{ intent }` |
@@ -76,7 +82,9 @@ also apply.
 Challenges bind the wallet, origin, timestamp and a random nonce; their
 Ed25519 signatures are verified server-side and are single-use. The opaque
 session token is held in an in-memory server-side session and bound to that
-wallet and Devnet. Bodies are streamed with a 32 KiB cap and strict field
+wallet and Devnet. A new successful sign-in revokes earlier sessions for the
+same wallet and the cookie presented by that browser; logout revokes the
+current token. Bodies are streamed with a 32 KiB cap and strict field
 validation. All public errors use `{ error }` without internal RPC details.
 Sessions and gateway records are process-local; use one Node process or
 session-affine routing, and expect a restart to invalidate pending sessions.

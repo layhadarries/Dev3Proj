@@ -1,6 +1,6 @@
 import { createPrivateKey, randomUUID, sign } from "node:crypto";
 import { Keypair, VersionedTransaction } from "@solana/web3.js";
-import { createConfirmationGateway, type RpcClient } from "@solguard/security";
+import type { RpcClient } from "@solguard/security";
 import { describe, expect, it, vi } from "vitest";
 import { createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
 import { RateLimiter } from "../lib/server/http";
@@ -33,10 +33,68 @@ function signatureFor(wallet: Keypair, message: string): string {
   return sign(null, Buffer.from(message, "utf8"), key).toString("base64");
 }
 
+interface RpcPauses {
+  beforeFresh?: (call: number) => Promise<void>;
+  beforeSimulate?: () => Promise<void>;
+}
+
+function verificationRpc(transferLamports: bigint, pauses: RpcPauses = {}): RpcClient {
+  const context = { slot: 100 };
+  const payerAfter = 5_000n;
+  const recipientAfter = 2n + transferLamports;
+  let freshCalls = 0;
+  const simulation = {
+    err: null,
+    fee: 5_000n,
+    preBalances: [transferLamports + 10_000n, 2n, 1n],
+    postBalances: [payerAfter, recipientAfter, 1n],
+    accounts: [payerAfter, recipientAfter].map((lamports) => ({
+      owner: "11111111111111111111111111111111" as const,
+      executable: false as const,
+      lamports,
+      data: ["", "base64"] as ["", "base64"],
+    })),
+    innerInstructions: [],
+    preTokenBalances: [],
+    postTokenBalances: [],
+    replacementBlockhash: null,
+    logs: ["mock simulation"],
+    unitsConsumed: 150,
+  };
+  return {
+    identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
+    fresh: async (hash) => {
+      freshCalls += 1;
+      await pauses.beforeFresh?.(freshCalls);
+      return { network: "devnet", commitment: "confirmed", blockhash: hash, slot: 100n };
+    },
+    fee: async () => ({ context, value: 5_000n }),
+    simulate: async () => {
+      await pauses.beforeSimulate?.();
+      return { context, value: simulation };
+    },
+  };
+}
+
+function deferredCall() {
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  return {
+    entered,
+    release,
+    wait: async () => {
+      enter();
+      await waiting;
+    },
+  };
+}
+
 async function signIn(
   handlers: ReturnType<typeof createApplicationHandlers>,
   wallet = Keypair.generate(),
-  options: { origin?: string } = {},
+  options: { origin?: string; cookie?: string } = {},
 ) {
   const challengeResponse = await handlers.challenge(request("session/challenge", { wallet: wallet.publicKey.toBase58() }, options));
   const { message } = await challengeResponse.json();
@@ -48,7 +106,19 @@ async function signIn(
 }
 
 function handlers(options: ApplicationDependencies = {}) {
-  return createApplicationHandlers({ allowedOrigin: origin, gateway: createConfirmationGateway(), ...options });
+  return createApplicationHandlers({ allowedOrigin: origin, ...options });
+}
+
+async function withSpendLimit<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
+  const previous = process.env.SOLGUARD_MAX_SPEND_LAMPORTS;
+  if (value === undefined) delete process.env.SOLGUARD_MAX_SPEND_LAMPORTS;
+  else process.env.SOLGUARD_MAX_SPEND_LAMPORTS = value;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.SOLGUARD_MAX_SPEND_LAMPORTS;
+    else process.env.SOLGUARD_MAX_SPEND_LAMPORTS = previous;
+  }
 }
 
 describe("wallet challenge authentication", () => {
@@ -108,6 +178,28 @@ describe("wallet challenge authentication", () => {
     }, { origin: otherOrigin }));
     expect(response.status).toBe(401);
   });
+
+  it("revokes the previous same-wallet session when a new one is issued", async () => {
+    const app = handlers();
+    const previous = await signIn(app);
+    const rotated = await signIn(app, previous.wallet, { cookie: previous.cookie });
+    const draft = { recipient: Keypair.generate().publicKey.toBase58(), amountBaseUnits: "1" };
+    expect((await app.stage(request("stage", draft, { cookie: previous.cookie }))).status).toBe(401);
+    expect((await app.stage(request("stage", draft, { cookie: rotated.cookie }))).status).toBe(200);
+  });
+
+  it("revokes the current server session and expires its cookie on logout", async () => {
+    const app = handlers();
+    const { cookie } = await signIn(app);
+    const response = await app.logout(request("session/logout", {}, { cookie }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect((await app.stage(request("stage", {
+      recipient: Keypair.generate().publicKey.toBase58(),
+      amountBaseUnits: "1",
+    }, { cookie }))).status).toBe(401);
+  });
 });
 
 describe("request boundaries", () => {
@@ -152,6 +244,19 @@ describe("request boundaries", () => {
     expect((await app.stage(request("stage", draft, { cookie: "solguard_session=not-a-token" }))).status).toBe(401);
     now += 60 * 60 * 1000;
     expect((await app.stage(request("stage", draft, { cookie }))).status).toBe(401);
+  });
+
+  it("rejects malformed and out-of-u64 server spend-limit configuration at startup", () => {
+    for (const invalid of ["", "01", "-1", "1.0", "18446744073709551616"]) {
+      const previous = process.env.SOLGUARD_MAX_SPEND_LAMPORTS;
+      process.env.SOLGUARD_MAX_SPEND_LAMPORTS = invalid;
+      try {
+        expect(() => createApplicationHandlers()).toThrow(/SOLGUARD_MAX_SPEND_LAMPORTS/);
+      } finally {
+        if (previous === undefined) delete process.env.SOLGUARD_MAX_SPEND_LAMPORTS;
+        else process.env.SOLGUARD_MAX_SPEND_LAMPORTS = previous;
+      }
+    }
   });
 });
 
@@ -232,38 +337,14 @@ describe("confirmation authorization and abuse controls", () => {
     const owner = Keypair.generate();
     const recipient = Keypair.generate().publicKey;
     const blockhash = Keypair.generate().publicKey.toBase58();
-    const context = { slot: 100 };
-    const simulation = {
-      err: null,
-      fee: 5_000n,
-      preBalances: [10_000n, 2n, 1n],
-      postBalances: [4_992n, 10n, 1n],
-      accounts: [4_992n, 10n].map((lamports) => ({
-        owner: "11111111111111111111111111111111" as const,
-        executable: false as const,
-        lamports,
-        data: ["", "base64"] as ["", "base64"],
-      })),
-      innerInstructions: [],
-      preTokenBalances: [],
-      postTokenBalances: [],
-      replacementBlockhash: null,
-      logs: ["mock simulation"],
-      unitsConsumed: 150,
-    };
-    const rpc: RpcClient = {
-      identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
-      fresh: async (hash) => ({ network: "devnet", commitment: "confirmed", blockhash: hash, slot: 100n }),
-      fee: async () => ({ context, value: 5_000n }),
-      simulate: async () => ({ context, value: simulation }),
-    };
     let signedSnapshot = Buffer.alloc(0);
     const submit = vi.fn(async (bytes: Uint8Array) => {
       signedSnapshot = Buffer.from(bytes);
       return "mock-devnet-signature";
     });
+    await withSpendLimit("1000000000", async () => {
     const app = handlers({
-      gateway: createConfirmationGateway({ rpc }),
+      rpc: verificationRpc(8n),
       blockhash: async () => ({ blockhash, lastValidBlockHeight: 123 }),
       submit,
     });
@@ -295,5 +376,130 @@ describe("confirmation authorization and abuse controls", () => {
     expect(await submitted.json()).toEqual({ signature: "mock-devnet-signature" });
     expect(signedSnapshot.toString("base64")).toBe(signedBase64);
     expect(submit).toHaveBeenCalledTimes(1);
+    });
   });
+
+  it("enforces below, exact, above and fee-inclusive spend limits through stage and build/inspect", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const scenarios = [
+        { amount: 999_994_999n, verdict: "PASS" },
+        { amount: 999_995_000n, verdict: "PASS" },
+        { amount: 999_995_001n, verdict: "BLOCK" },
+        { amount: 999_999_999n, verdict: "BLOCK" },
+      ] as const;
+      for (const scenario of scenarios) {
+        const wallet = Keypair.generate();
+        const recipient = Keypair.generate().publicKey;
+        const blockhash = Keypair.generate().publicKey.toBase58();
+        const app = handlers({
+          rpc: verificationRpc(scenario.amount),
+          blockhash: async () => ({ blockhash, lastValidBlockHeight: 123 }),
+        });
+        const { cookie } = await signIn(app, wallet);
+        const draft = { recipient: recipient.toBase58(), amountBaseUnits: scenario.amount.toString() };
+        expect((await app.stage(request("stage", {
+          ...draft,
+          maxSpendLamports: "0",
+        }, { cookie }))).status).toBe(400);
+        const staged = await app.stage(request("stage", draft, { cookie }));
+        const { id } = await staged.json();
+        expect((await app.build(request("build", {
+          confirmationId: id,
+          maxSpendLamports: "0",
+        }, { cookie }))).status).toBe(400);
+        expect((await app.confirm(request("confirm", { id }, { cookie }))).status).toBe(200);
+        const built = await app.build(request("build", { confirmationId: id }, { cookie }));
+        expect(built.status).toBe(200);
+        const { report } = await built.json();
+        expect(report.verdict).toBe(scenario.verdict);
+        if (scenario.verdict === "BLOCK") {
+          expect(report.findings.map((finding: { ruleId: string }) => finding.ruleId)).toContain("AMOUNT_MISMATCH");
+          expect((await app.handoff(request("handoff", { id }, { cookie }))).status).toBe(409);
+        }
+      }
+    });
+  });
+
+  it("uses the one-SOL default when the server spend-limit variable is unset", async () => {
+    await withSpendLimit(undefined, async () => {
+      const amount = 999_995_001n;
+      const wallet = Keypair.generate();
+      const recipient = Keypair.generate().publicKey;
+      const blockhash = Keypair.generate().publicKey.toBase58();
+      const app = handlers({
+        rpc: verificationRpc(amount),
+        blockhash: async () => ({ blockhash, lastValidBlockHeight: 123 }),
+      });
+      const { cookie } = await signIn(app, wallet);
+      const staged = await app.stage(request("stage", {
+        recipient: recipient.toBase58(),
+        amountBaseUnits: amount.toString(),
+      }, { cookie }));
+      const { id } = await staged.json();
+      await app.confirm(request("confirm", { id }, { cookie }));
+      const response = await app.build(request("build", { confirmationId: id }, { cookie }));
+      expect((await response.json()).report.verdict).toBe("BLOCK");
+    });
+  });
+
+  it.each(["inspect", "handoff", "submit"] as const)(
+    "re-resolves the current server session after delayed %s and blocks revoked-session transport",
+    async (phase) => {
+      await withSpendLimit("1000000000", async () => {
+        const owner = Keypair.generate();
+        const recipient = Keypair.generate().publicKey;
+        const blockhash = Keypair.generate().publicKey.toBase58();
+        const pause = deferredCall();
+        const pauses: RpcPauses = phase === "inspect"
+          ? { beforeSimulate: pause.wait }
+          : { beforeFresh: async (call) => {
+            const targetCall = phase === "handoff" ? 2 : 3;
+            if (call === targetCall) await pause.wait();
+          } };
+        const submit = vi.fn(async () => "should-not-submit");
+        const app = handlers({
+          rpc: verificationRpc(8n, pauses),
+          blockhash: async () => ({ blockhash, lastValidBlockHeight: 123 }),
+          submit,
+        });
+        const { cookie } = await signIn(app, owner);
+        const staged = await app.stage(request("stage", {
+          recipient: recipient.toBase58(),
+          amountBaseUnits: "8",
+        }, { cookie }));
+        const { id } = await staged.json();
+        await app.confirm(request("confirm", { id }, { cookie }));
+
+        let pending: Promise<Response>;
+        if (phase === "inspect") {
+          pending = app.build(request("build", { confirmationId: id }, { cookie }));
+        } else {
+          const built = await app.build(request("build", { confirmationId: id }, { cookie }));
+          expect(built.status).toBe(200);
+          const handoffRequest = app.handoff(request("handoff", { id }, { cookie }));
+          if (phase === "handoff") {
+            pending = handoffRequest;
+          } else {
+            const handoff = await handoffRequest;
+            expect(handoff.status).toBe(200);
+            const { wire } = await handoff.json();
+            const signed = VersionedTransaction.deserialize(Buffer.from(wire, "base64"));
+            signed.sign([owner]);
+            pending = app.submit(request("submit", {
+              id,
+              signed: Buffer.from(signed.serialize()).toString("base64"),
+            }, { cookie }));
+          }
+        }
+
+        await pause.entered;
+        const logout = await app.logout(request("session/logout", {}, { cookie }));
+        expect(logout.status).toBe(200);
+        pause.release();
+        const response = await pending;
+        expect(response.status).toBe(409);
+        expect(submit).not.toHaveBeenCalled();
+      });
+    },
+  );
 });
