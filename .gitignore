@@ -6,4 +6,5 @@ coverage/
 .env.*
 !.env.example
 fixtures/live/
+/wallet-run*.json
 *.log

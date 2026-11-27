@@ -16,3 +16,5 @@ Message hash `fb705c730a06f023008ba6a2ffe2799859b7ce495b09be1ef5f6f4588dfab17f`;
 - `tamper` passed live simulation and freshness checks before modification. The modified wire bytes returned `TX_MODIFIED`.
 - Correct payer signature, missing signature, wrong key, changed signature count, changed message, expiry, fee changes, altered policy, forged report and reuse were tested with deterministic RPC fixtures and ephemeral test-only keys. These are **not** live signed transactions. No wallet approval, submission, confirmation or Explorer transaction signature is claimed.
 - Live commands assert expected verdicts and fail on unavailable RPC. Public balances, fees, slots and hashes can change. Reproduce using [SECURITY_API.md](SECURITY_API.md).
+
+For a private read-only run with your own Devnet payer, use `node packages/security/scripts/wallet-evidence.mjs "$PAYER" > wallet-run.json` after building. This report contains identifying public addresses and serialized messages. Keep it local; the default output filename is gitignored.
