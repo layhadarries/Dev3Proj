@@ -111,14 +111,17 @@ export function TransferApp() {
       "Approve the transaction in your wallet",
       async (isCurrent) => {
         try {
-          await signAndSubmit(api, wallet!, address!, review, acknowledged, {
+          const receiptSignature = await signAndSubmit(api, wallet!, address!, review, acknowledged, {
             isCurrent,
             onSubmit: (signature) => {
               sent = signature;
               setSubmission({ signature, state: "sending" });
             },
           });
-          setSubmission({ signature: sent!, state: "confirmed" });
+          if (!sent || receiptSignature !== sent) {
+            throw new Error("Confirmation could not be established: the submission receipt did not match the signed transaction.");
+          }
+          setSubmission({ signature: sent, state: "confirmed" });
         } catch (failure) {
           if (!sent) throw failure;
           const note = failure instanceof Error ? failure.message : undefined;

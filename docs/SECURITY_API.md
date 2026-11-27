@@ -202,6 +202,14 @@ forwards only the exact signed bytes after `submitAndConfirm` verifies the
 signature and transaction. Do not configure this demo for mainnet or use
 funded wallets.
 
+The successful submit response is a strict `{ signature }` envelope. The
+client validates that the signature is canonical Base58, decodes to exactly
+64 bytes, and exactly matches the signature derived from the exact signed
+transaction before displaying confirmed status. Missing, malformed,
+mismatched or unexpected receipts are insufficient confirmation evidence:
+the client retains the locally derived signature, the Devnet Explorer recovery
+link and an unknown-outcome state. They do not trigger a retransmission.
+
 The initial `sendRawTransaction` broadcast has a 10-second application-level
 deadline. The Solana `@solana/web3.js` `Connection.sendRawTransaction` API used
 here does not expose an AbortSignal or other request-cancellation handle.

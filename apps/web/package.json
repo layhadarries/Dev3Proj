@@ -8,7 +8,8 @@
     "start": "next start",
     "build": "next build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "browser:sg01": "node tests/browser-sg01.cjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.0",
@@ -24,6 +25,7 @@
     "@types/node": "26.6.10",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
+    "playwright": "1.55.1",
     "vitest": "4.1.12"
   }
 }

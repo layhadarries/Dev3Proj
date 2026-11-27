@@ -103,6 +103,33 @@ export interface SigningHooks {
   onSubmit(signature: string): void;
 }
 
+export function validateSubmissionReceipt(value: unknown, expectedSignature: string): { signature: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Confirmation could not be established: the submission response was not a receipt.");
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "signature") {
+    throw new Error("Confirmation could not be established: the submission response was unexpected.");
+  }
+  const signature = (value as { signature?: unknown }).signature;
+  if (typeof signature !== "string" || signature.length === 0) {
+    throw new Error("Confirmation could not be established: the submission receipt has no valid signature.");
+  }
+  let decoded: Uint8Array;
+  try {
+    decoded = bs58.decode(signature);
+  } catch {
+    throw new Error("Confirmation could not be established: the submission signature is not valid Base58.");
+  }
+  if (decoded.length !== 64 || bs58.encode(decoded) !== signature) {
+    throw new Error("Confirmation could not be established: the submission signature is malformed or noncanonical.");
+  }
+  if (signature !== expectedSignature) {
+    throw new Error("Confirmation could not be established: the server receipt does not match the signed transaction.");
+  }
+  return { signature };
+}
+
 /** Says what a wallet altered, using only public program addresses and counts. */
 export function describeChange(expected: VersionedTransaction["message"], signed: VersionedTransaction["message"]): string {
   const programs = (message: typeof expected) =>
@@ -162,10 +189,10 @@ export async function signAndSubmit(
   if (!first || first.every((byte) => byte === 0)) throw new Error("The wallet did not sign the transaction.");
   const expectedSignature = bs58.encode(first);
   hooks.onSubmit(expectedSignature);
-  const { signature } = await api<{ signature: string }>("submit", { id: review.id, signed: base64(signed.serialize()) });
-  // A success reply counts only if it names the transaction that was just signed.
-  if (signature !== expectedSignature) {
-    throw new Error("The server's reply does not match the signed transaction. Check Explorer before sending again.");
-  }
-  return signature;
+  const receipt = await api(
+    "submit",
+    { id: review.id, signed: base64(signed.serialize()) },
+    (value: unknown) => validateSubmissionReceipt(value, expectedSignature),
+  );
+  return receipt.signature;
 }
