@@ -63,6 +63,12 @@ cross-site Fetch Metadata) rather than a custom CSRF header, apply per-address,
 per-session and process-wide public-auth rate limits, and pin submission to the
 Devnet endpoint. See the [web API contract](SECURITY_API.md#web-api-routes).
 
+## Transaction shape
+
+The builder emits a compute-unit limit (1,000), a unit price (1,000 micro-lamports, 1 lamport per
+transfer) and the one transfer. The budget instructions are there so that wallets do not add their
+own. The message check stays strict: any wallet change still blocks submission.
+
 ## Running the model
 
 `./scripts/local-llm.sh` serves Qwen3 4B (open-weight, Apache-2.0) on `127.0.0.1:8089` with llama.cpp

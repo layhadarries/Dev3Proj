@@ -103,6 +103,23 @@ export interface SigningHooks {
   onSubmit(signature: string): void;
 }
 
+/** Says what a wallet altered, using only public program addresses and counts. */
+export function describeChange(expected: VersionedTransaction["message"], signed: VersionedTransaction["message"]): string {
+  const programs = (message: typeof expected) =>
+    message.compiledInstructions.map((ix) => message.staticAccountKeys[ix.programIdIndex]?.toBase58() ?? "unknown");
+  const before = programs(expected);
+  const after = programs(signed);
+  const added = [...after];
+  for (const program of before) {
+    const index = added.indexOf(program);
+    if (index >= 0) added.splice(index, 1);
+  }
+  const notes = [`instructions: ${before.length} before, ${after.length} after`];
+  if (added.length) notes.push(`added programs: ${[...new Set(added)].join(", ")}`);
+  if (expected.recentBlockhash !== signed.recentBlockhash) notes.push("blockhash replaced");
+  return notes.join("; ");
+}
+
 /**
  * Releases the verified transaction, has the wallet sign it and returns it to the server.
  * `acknowledged` must come from the user's explicit action on a warning.
@@ -136,7 +153,9 @@ export async function signAndSubmit(
   assertCurrent();
   const signed = await wallet.signTransaction(unsigned);
   if (base64(signed.message.serialize()) !== expected) {
-    throw new Error("The wallet changed the transaction, so it was not submitted.");
+    throw new Error(
+      `The wallet changed the transaction, so it was not submitted (${describeChange(VersionedTransaction.deserialize(fromBase64(wire)).message, signed.message)}).`,
+    );
   }
   assertCurrent();
   const first = signed.signatures[0];

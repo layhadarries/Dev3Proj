@@ -73,14 +73,16 @@ interface RpcPauses {
 
 function verificationRpc(transferLamports: bigint, pauses: RpcPauses = {}): RpcClient {
   const context = { slot: 100 };
-  const payerAfter = 5_000n;
+  // 10,000 spare, less the 5,000 base fee and the 1 lamport priority fee.
+  const payerAfter = 4_999n;
   const recipientAfter = 2n + transferLamports;
   let freshCalls = 0;
   const simulation = {
     err: null,
-    fee: 5_000n,
-    preBalances: [transferLamports + 10_000n, 2n, 1n],
-    postBalances: [payerAfter, recipientAfter, 1n],
+    fee: 5_001n,
+    // Payer, recipient and the two program accounts.
+    preBalances: [transferLamports + 10_000n, 2n, 1n, 1n],
+    postBalances: [payerAfter, recipientAfter, 1n, 1n],
     accounts: [payerAfter, recipientAfter].map((lamports) => ({
       owner: "11111111111111111111111111111111" as const,
       executable: false as const,
@@ -101,7 +103,7 @@ function verificationRpc(transferLamports: bigint, pauses: RpcPauses = {}): RpcC
       await pauses.beforeFresh?.(freshCalls);
       return { network: "devnet", commitment: "confirmed", blockhash: hash, slot: 100n };
     },
-    fee: async () => ({ context, value: 5_000n }),
+    fee: async () => ({ context, value: 5_001n }),
     simulate: async () => {
       await pauses.beforeSimulate?.();
       return { context, value: simulation };
@@ -1359,9 +1361,9 @@ describe("confirmation authorization and abuse controls", () => {
   it("enforces below, exact, above and fee-inclusive spend limits through stage and build/inspect", async () => {
     await withSpendLimit("1000000000", async () => {
       const scenarios = [
+        { amount: 999_994_998n, verdict: "PASS" },
         { amount: 999_994_999n, verdict: "PASS" },
-        { amount: 999_995_000n, verdict: "PASS" },
-        { amount: 999_995_001n, verdict: "BLOCK" },
+        { amount: 999_995_000n, verdict: "BLOCK" },
         { amount: 999_999_999n, verdict: "BLOCK" },
       ] as const;
       for (const scenario of scenarios) {
@@ -1399,7 +1401,7 @@ describe("confirmation authorization and abuse controls", () => {
 
   it("uses the one-SOL default when the server spend-limit variable is unset", async () => {
     await withSpendLimit(undefined, async () => {
-      const amount = 999_995_001n;
+      const amount = 999_995_000n;
       const wallet = Keypair.generate();
       const recipient = Keypair.generate().publicKey;
       const blockhash = Keypair.generate().publicKey.toBase58();

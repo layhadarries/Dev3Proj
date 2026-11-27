@@ -1,4 +1,6 @@
-import { Keypair, SystemProgram, Transaction, VersionedMessage, VersionedTransaction } from "@solana/web3.js";
+import {
+  ComputeBudgetProgram, Keypair, SystemProgram, Transaction, VersionedMessage, VersionedTransaction,
+} from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
 import { ApiError, createApi, type Api } from "../lib/client/api";
 import {
@@ -122,6 +124,19 @@ describe("sign and submit", () => {
     const { api } = server({ ...good, handoff: { wire: unsignedWire(bytes(6)) } });
     await expect(signAndSubmit(api, w, address, review("PASS"), false, live)).rejects.toThrow("differs");
     expect(w.signed).toBe(0);
+  });
+  it("says which programs a wallet added", async () => {
+    const adding: WalletProvider = {
+      ...wallet(),
+      signTransaction: async () => {
+        const changed = Transaction.from(Buffer.from(unsignedWire(message), "base64"));
+        changed.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5 }));
+        return new VersionedTransaction(VersionedMessage.deserialize(changed.serializeMessage()));
+      },
+    };
+    await expect(signAndSubmit(server(good).api, adding, address, review("PASS"), false, live)).rejects.toThrow(
+      `instructions: 1 before, 2 after; added programs: ${ComputeBudgetProgram.programId.toBase58()}`,
+    );
   });
   it("does not submit if the wallet changes the transaction", async () => {
     const { api, calls } = server(good);

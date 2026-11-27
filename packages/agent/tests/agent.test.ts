@@ -1,4 +1,6 @@
-import { Keypair, Message, SystemInstruction, Transaction } from "@solana/web3.js";
+import {
+  ComputeBudgetInstruction, ComputeBudgetProgram, Keypair, Message, SystemInstruction, SystemProgram, Transaction,
+} from "@solana/web3.js";
 import {
   createConfirmationGateway, parseConfirmedSolIntent, prepareWalletApproval, verify, type RpcClient,
 } from "@solguard/security";
@@ -152,13 +154,17 @@ describe("builder", () => {
   };
   const intent = confirmIntent({ recipient: bob, amountBaseUnits: "9007199254740993" }, alice);
 
-  it("builds one transfer message matching the intent", async () => {
+  it("builds one transfer plus a fixed compute budget, matching the intent", async () => {
     const built = await buildTransfer(intent, rpc);
     const message = Buffer.from(built.messageBase64, "base64");
     const tx = Transaction.populate(Message.from(message));
-    expect(tx.instructions).toHaveLength(1);
+    expect(tx.instructions.map((ix) => ix.programId.toBase58())).toEqual([
+      ComputeBudgetProgram.programId.toBase58(), ComputeBudgetProgram.programId.toBase58(), SystemProgram.programId.toBase58(),
+    ]);
+    expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(tx.instructions[0]!).units).toBe(1_000);
+    expect(ComputeBudgetInstruction.decodeSetComputeUnitPrice(tx.instructions[1]!).microLamports).toBe(1_000n);
     expect(tx.feePayer?.toBase58()).toBe(alice);
-    const decoded = SystemInstruction.decodeTransfer(tx.instructions[0]!);
+    const decoded = SystemInstruction.decodeTransfer(tx.instructions[2]!);
     expect(decoded.fromPubkey.toBase58()).toBe(alice);
     expect(decoded.toPubkey.toBase58()).toBe(bob);
     // Above Number.MAX_SAFE_INTEGER: proves no float rounding.
@@ -190,9 +196,9 @@ describe("security pipeline", () => {
   /** Stands in for Devnet: simulates exactly the confirmed balance changes. */
   function chain(intent: Intent, recipientBalance = 1_000_000n): RpcClient {
     const context = { slot: 100 };
-    const fee = 5000n;
-    const pre = [1_000_000_000n, recipientBalance, 1n];
-    const post = [pre[0]! - intent.amountBaseUnits - fee, pre[1]! + intent.amountBaseUnits, 1n];
+    const fee = 5001n;
+    const pre = [1_000_000_000n, recipientBalance, 1n, 1n];
+    const post = [pre[0]! - intent.amountBaseUnits - fee, pre[1]! + intent.amountBaseUnits, 1n, 1n];
     return {
       identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
       fresh: async () => ({ network: "devnet", commitment: "confirmed", blockhash, slot: 100n }),
@@ -223,7 +229,7 @@ describe("security pipeline", () => {
     const { built, message, deps, report } = await run(intent, intent);
     expect(report.verdict).toBe("PASS");
     expect(report.messageHash).toBe(built.messageHash);
-    expect(explainReport(serializeReport(report))).toMatchObject({ verdict: "PASS", feeSol: "0.000005" });
+    expect(explainReport(serializeReport(report))).toMatchObject({ verdict: "PASS", feeSol: "0.000005001" });
     const wire = await prepareWalletApproval(intent, message, report, deps);
     expect(wire.subarray(65)).toEqual(message);
     await expect(prepareWalletApproval(intent, message, report, deps)).rejects.toThrow();
@@ -378,13 +384,13 @@ describe("handlers", () => {
       rpc: {
         identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
         fresh: async () => ({ network: "devnet", commitment: "confirmed", blockhash, slot: 100n }),
-        fee: async () => ({ context, value: 5000n }),
+        fee: async () => ({ context, value: 5001n }),
         simulate: async () => ({
           context,
           value: {
-            err: null, fee: 5000n, preBalances: [1_000_000_000n, 1_000_000n, 1n],
-            postBalances: [499_995_000n, 501_000_000n, 1n],
-            accounts: [499_995_000n, 501_000_000n].map((lamports) => ({
+            err: null, fee: 5001n, preBalances: [1_000_000_000n, 1_000_000n, 1n, 1n],
+            postBalances: [499_994_999n, 501_000_000n, 1n, 1n],
+            accounts: [499_994_999n, 501_000_000n].map((lamports) => ({
               owner: "11111111111111111111111111111111" as const,
               executable: false as const, lamports, data: ["", "base64"] as ["", "base64"],
             })),
