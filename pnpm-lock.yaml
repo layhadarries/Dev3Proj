@@ -32,6 +32,9 @@ importers:
       '@solguard/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@solguard/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@solguard/shared':
         specifier: workspace:*
         version: link:../../packages/shared
