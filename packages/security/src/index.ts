@@ -13,4 +13,4 @@ export {
   verifySigned,
   type VerifyDeps,
 } from "./verification/verify.js";
-export { checkDevnetIdentity, getWalletBalance, inspectAccount } from "./rpc/devnet.js";
+export { checkDevnetIdentity, getRecentBlockhash, getWalletBalance, inspectAccount, requireValidBlockhash } from "./rpc/devnet.js";

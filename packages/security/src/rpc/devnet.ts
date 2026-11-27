@@ -7,7 +7,9 @@ const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
-async function readRpc(env: Environment, method: "getGenesisHash" | "getBalance" | "getAccountInfo", params: unknown[]) {
+type ReadMethod = "getGenesisHash" | "getBalance" | "getAccountInfo" | "getLatestBlockhash" | "isBlockhashValid";
+
+async function readRpc(env: Environment, method: ReadMethod, params: unknown[]) {
   if ((env.SOLANA_NETWORK ?? "devnet") !== "devnet" ||
       (env.SOLANA_RPC_URL ?? endpoint) !== endpoint) {
     throw new Error("DEVNET_CONFIG_INVALID");
@@ -40,6 +42,33 @@ export async function checkDevnetIdentity(env: Environment = process.env) {
 }
 
 const u64 = z.bigint().nonnegative().max(0xffffffffffffffffn);
+const context = z.object({ slot: u64 });
+const latestBlockhash = z.object({
+  context, value: z.object({ blockhash: Base58PubkeySchema, lastValidBlockHeight: u64 }),
+});
+
+export async function getRecentBlockhash(env: Environment = process.env) {
+  await checkDevnetIdentity(env);
+  const result = latestBlockhash.safeParse(await readRpc(env, "getLatestBlockhash", [{ commitment: "confirmed" }]));
+  if (!result.success) throw new Error("DEVNET_RPC_UNAVAILABLE");
+  return { network: "devnet", commitment: "confirmed", slot: result.data.context.slot, ...result.data.value } as const;
+}
+
+/** Throws unless the exact hash is currently valid at or after the verification slot. */
+export async function requireValidBlockhash(blockhash: string, minSlot: bigint, env: Environment = process.env) {
+  if (!Base58PubkeySchema.safeParse(blockhash).success) throw new Error("INVALID_BLOCKHASH");
+  if (typeof minSlot !== "bigint" || minSlot < 0n || minSlot > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("INVALID_MIN_SLOT");
+  }
+  await checkDevnetIdentity(env);
+  const result = z.object({ context, value: z.boolean() }).safeParse(await readRpc(env, "isBlockhashValid", [
+    blockhash, { commitment: "confirmed", minContextSlot: Number(minSlot) },
+  ]));
+  if (!result.success || result.data.context.slot < minSlot) throw new Error("DEVNET_RPC_UNAVAILABLE");
+  if (!result.data.value) throw new Error("BLOCKHASH_NOT_VALID");
+  return { network: "devnet", commitment: "confirmed", blockhash, slot: result.data.context.slot } as const;
+}
+
 const balance = z.object({ context: z.object({ slot: u64 }), value: u64 });
 
 export async function getWalletBalance(address: string, env: Environment = process.env) {

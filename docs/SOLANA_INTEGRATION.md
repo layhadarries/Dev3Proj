@@ -18,3 +18,9 @@ Live read using the public System Program address (`1111111111111111111111111111
 `await inspectAccount(base58Address)` returns `{network, address, commitment, slot, account}`. Only an explicit RPC `null` means the account was absent at that slot; incomplete metadata throws instead. For existing accounts, `account.owner` is the owning **program**, not a wallet authority. `account.executable` is a boolean; `account.lamports`, `account.space` (bytes) and `slot` are bigint. The read requests no account data bytes and cannot establish token authorities or transaction safety.
 
 Live Devnet observation at confirmed slot **526823420**: the System Program was executable, owned by `NativeLoader1111111111111111111111111111111`, with 1 lamport and 14 bytes of space.
+
+## Recent blockhash and approval-time freshness
+
+`getRecentBlockhash()` returns the confirmed `blockhash`, observation `slot` and `lastValidBlockHeight`. Block heights and slots are distinct counters; do not compare them. Immediately before wallet approval, call `requireValidBlockhash(message.recentBlockhash, verificationSlot)` with the hash from the exact verified message. Stop on any exception. An invalid hash requires building and verifying a fresh proposal; never swap it into an approved message. A successful check establishes freshness at the returned slot only, not transaction safety. The wallet handoff is not yet implemented.
+
+Live check: `9fvjF8qqcQiNuaKcym3mUVCbLbfucY2fm1vNM19m1ebq` was retrieved at slot `526824217` and reported valid at slot `526824221`. This is historical evidence, not a reusable blockhash.
