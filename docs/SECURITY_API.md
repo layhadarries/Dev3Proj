@@ -86,22 +86,44 @@ Public claimed-wallet limits use the validated wallet in the request only as
 an additional abuse signal; it is not authentication. Authenticated wallet
 limits use the wallet resolved from the server-side session and survive
 session rotation/logout/re-authentication. Per-session limits are retained as
-an additional layer. All routes except logout also share a conservative
-unattributed-client ceiling per route. The endpoint policy is:
+an additional layer.
+
+On non-public endpoints, the server validates the Origin and resolves the
+session before charging any authenticated-operation quota. A missing, invalid,
+revoked or expired session consumes only a separate per-route unauthenticated
+abuse bucket, then receives 401 (or 429 if that bucket is exhausted). It does
+not consume the authenticated client fallback, session, wallet, per-process
+route quota or in-flight capacity. A valid session is charged to its separate
+client fallback, then the body is parsed and schema-validated; only then are
+session, wallet and global operation quotas and any concurrency reservation
+charged. Malformed authenticated bodies therefore use only the authenticated
+client abuse bucket, not operation budgets. Public authentication endpoints
+retain their existing limits and ordering.
+
+The authenticated and unauthenticated client buckets both use the same
+conservative `unattributed` identity, but have separate keys and counters.
+Forwarded headers cannot move a request between or reset these buckets. This
+preserves bounded protection for unauthenticated traffic without allowing it
+to spend authenticated route budgets. Unauthenticated clients still share
+their fallback bucket with each other, and authenticated clients share their
+client fallback bucket with each other when a verified peer address is
+unavailable.
+
+The endpoint policy is:
 
 | Endpoint | Per-client fallback | Public / session / wallet limits | Per-process route quota | In-flight policy |
 | --- | ---: | --- | ---: | --- |
 | `/api/session/challenge` | 60/min | public 12/min; claimed wallet 5/min; session storage 5 active challenges per wallet | 120/min | — |
 | `/api/session` | 60/min | public 12/min; claimed wallet 10/min | 120/min | — |
 | `/api/session/logout` | none | none; logout remains available | none | — |
-| `/api/parse` | 120/min | session 30/min; authenticated wallet 30/min | 60/min | AI/parse group 4, wallet 2; 16 total expensive operations |
-| `/api/stage` | 120/min | session/wallet 20/min | 240/min | — |
-| `/api/confirm` | 120/min | session/wallet 12/min | 240/min | — |
-| `/api/build` | 120/min | session/wallet 8/min | 30/min | build group 4, wallet 2; 16 total |
-| `/api/explain` | 120/min | session/wallet 30/min | 300/min | — |
-| `/api/acknowledge` | 120/min | session/wallet 12/min | 120/min | — |
-| `/api/handoff` | 120/min | session/wallet 12/min | 60/min | handoff/RPC group 8, wallet 2; 16 total |
-| `/api/submit` | 120/min | session/wallet 8/min | 30/min | submit/confirmation group 4, wallet 1; 16 total |
+| `/api/parse` | 120/min per auth state | session 30/min; authenticated wallet 30/min | 60/min, authenticated only | AI/parse group 4, wallet 2; 16 total |
+| `/api/stage` | 120/min per auth state | session/wallet 20/min | 240/min, authenticated only | — |
+| `/api/confirm` | 120/min per auth state | session/wallet 12/min | 240/min, authenticated only | — |
+| `/api/build` | 120/min per auth state | session/wallet 8/min | 30/min, authenticated only | build group 4, wallet 2; 16 total |
+| `/api/explain` | 120/min per auth state | session/wallet 30/min | 300/min, authenticated only | — |
+| `/api/acknowledge` | 120/min per auth state | session/wallet 12/min | 120/min, authenticated only | — |
+| `/api/handoff` | 120/min per auth state | session/wallet 12/min | 60/min, authenticated only | handoff/RPC group 8, wallet 2; 16 total |
+| `/api/submit` | 120/min per auth state | session/wallet 8/min | 30/min, authenticated only | submit/confirmation group 4, wallet 1; 16 total |
 
 Quota windows start with the first request for that key. Expiry allows a new
 window; the default limiter clock is monotonic, not wall-clock time. New keys

@@ -443,6 +443,80 @@ describe("confirmation authorization and abuse controls", () => {
     expect(modelCalls).toBe(0);
   });
 
+  it("keeps unauthenticated parse abuse out of authenticated global quotas and AI work", async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    let modelCalls = 0;
+    const app = handlers({
+      llm: {
+        complete: async () => {
+          modelCalls += 1;
+          return JSON.stringify({ action: "transfer", asset: "SOL", amount: "0.5", recipient });
+        },
+      },
+    });
+
+    for (let index = 0; index < 60; index += 1) {
+      const crossOrigin = await app.parse(request("parse", {
+        message: `could you move 0.5 SOL over to ${recipient} for me`,
+      }, { origin: "http://attacker.example" }));
+      expect(crossOrigin.status).toBe(403);
+    }
+
+    for (let index = 0; index < 121; index += 1) {
+      const response = await app.parse(request("parse", {
+        message: `could you move 0.5 SOL over to ${recipient} for me`,
+      }, { forwardedFor: `198.51.100.${index + 1}` }));
+      expect(response.status).toBe(index < 120 ? 401 : 429);
+    }
+    expect(modelCalls).toBe(0);
+
+    const { cookie } = await signIn(app);
+    const authenticated = await app.parse(request("parse", {
+      message: `could you move 0.5 SOL over to ${recipient} for me`,
+    }, { cookie }));
+    expect(authenticated.status).toBe(200);
+    expect(modelCalls).toBe(1);
+  });
+
+  it("keeps invalid and expired build requests out of authenticated quotas and RPC work", async () => {
+    let now = 10_000;
+    const rpc = verificationRpc(8n);
+    const simulate = vi.spyOn(rpc, "simulate");
+    const blockhash = vi.fn(async () => ({
+      blockhash: Keypair.generate().publicKey.toBase58(),
+      lastValidBlockHeight: 123,
+    }));
+    const app = handlers({ now: () => now, rpc, blockhash });
+    const expired = await signIn(app);
+    now += 60 * 60 * 1000 + 1;
+
+    for (let index = 0; index < 15; index += 1) {
+      const invalid = await app.build(request("build", { confirmationId: randomUUID() }, {
+        cookie: "solguard_session=not-a-token",
+      }));
+      const expiredResponse = await app.build(request("build", { confirmationId: randomUUID() }, {
+        cookie: expired.cookie,
+      }));
+      expect(invalid.status).toBe(401);
+      expect(expiredResponse.status).toBe(401);
+    }
+    expect(blockhash).not.toHaveBeenCalled();
+    expect(simulate).not.toHaveBeenCalled();
+
+    const authenticated = await signIn(app);
+    const staged = await app.stage(request("stage", {
+      recipient: Keypair.generate().publicKey.toBase58(),
+      amountBaseUnits: "8",
+    }, { cookie: authenticated.cookie }));
+    const { id } = await staged.json();
+    expect(staged.status).toBe(200);
+    expect((await app.confirm(request("confirm", { id }, { cookie: authenticated.cookie }))).status).toBe(200);
+    const built = await app.build(request("build", { confirmationId: id }, { cookie: authenticated.cookie }));
+    expect(built.status).toBe(200);
+    expect(blockhash).toHaveBeenCalledTimes(1);
+    expect(simulate).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps per-wallet parse quotas across session rotation and aggregates many wallets globally", async () => {
     const recipient = Keypair.generate().publicKey.toBase58();
     let modelCalls = 0;

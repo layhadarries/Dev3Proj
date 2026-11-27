@@ -164,3 +164,48 @@ a conservative fallback bucket. Rate-limit, session, and in-flight state are
 process-local: restarts clear quotas, multiple instances enforce independent
 limits, and this is not distributed DDoS protection. Limits are provisional
 single-instance MVP settings and have not been load-tested.
+
+## Authenticated quota isolation
+
+Review found that `invoke()` previously charged the common per-client and
+per-route global buckets before resolving the session on non-public routes.
+Because client identity is conservatively `unattributed`, unauthenticated
+requests could consume global budgets intended to bound authenticated
+operations. Origin validation already ran first; the defect was the ordering
+of session resolution and quota charging.
+
+The handler now keeps unauthenticated abuse counters in a distinct per-route
+namespace. A protected request must pass Origin validation and resolve a
+valid session before it can charge the authenticated client fallback. Its
+body must also pass JSON/schema validation before session, wallet, global
+operation, or in-flight budgets are charged. Missing, invalid, revoked and
+expired sessions consume only the bounded unauthenticated fallback and are
+rejected; they cannot invoke AI or blockchain RPC services. Public challenge,
+sign-in and logout handling was not redesigned.
+
+Regression tests cover cross-origin rejection, 120 unauthenticated protected
+requests followed by a 121st-request 429 in the separate abuse bucket,
+preserving the authenticated parse quota and AI availability, invalid and
+expired sessions attempting expensive builds, zero RPC calls for rejected
+builds, successful authenticated parsing/building after the attempts, and
+existing authenticated wallet quota enforcement.
+
+### Verification
+
+- `pnpm test` — 261 tests passed (96 security, 92 agent, 73 web).
+- V8 coverage — security 92.03% / 88.95% / 96.07% / 93.84%;
+  agent 99.31% / 97.97% / 100.00% / 99.15%;
+  web 79.08% / 72.41% / 73.24% / 83.84%
+  (statements / branches / functions / lines).
+- `pnpm lint`, `pnpm typecheck`, `pnpm build` passed.
+- `pnpm audit --audit-level high` passed; four moderate dependency findings
+  remain, with no high-severity finding reported at this threshold.
+
+Unauthenticated requests still share a per-route fallback bucket because
+there is no verified peer address; enough unauthenticated traffic can cause
+other unauthenticated requests to receive 429, but does not spend authenticated
+operation budgets. Authenticated requests also share the authenticated client
+fallback identity; per-session, per-wallet and global limits remain layered
+alongside it. All counters are process-local, reset on restart and independent
+between instances. The checks were deterministic and mocked; no production
+ingress, live provider, or load/stress behavior was tested.

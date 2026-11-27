@@ -291,17 +291,37 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
       if (request.method !== "POST") throw new HttpError(405, "Method not allowed");
       const origin = requireSameOrigin(request, dependencies.allowedOrigin ?? process.env.APP_ORIGIN);
       const address = clientAddress(request);
-      if (options.ipLimit !== false) {
-        const ipLimit = limiter.take(`client:${address}:${route}`, options.ipLimit ?? 120);
-        if (ipLimit !== undefined) throw new HttpError(429, "Too many requests", ipLimit);
-      }
-      if (options.globalLimit !== undefined) {
-        const globalLimit = limiter.take(`global:${route}`, options.globalLimit);
-        if (globalLimit !== undefined) throw new HttpError(429, "Too many requests", globalLimit);
+      let session: ReturnType<SessionStore["resolve"]> | undefined;
+      if (options.public) {
+        if (options.ipLimit !== false) {
+          const ipLimit = limiter.take(`client:${address}:${route}`, options.ipLimit ?? 120);
+          if (ipLimit !== undefined) throw new HttpError(429, "Too many requests", ipLimit);
+        }
+        if (options.globalLimit !== undefined) {
+          const globalLimit = limiter.take(`global:${route}`, options.globalLimit);
+          if (globalLimit !== undefined) throw new HttpError(429, "Too many requests", globalLimit);
+        }
+      } else {
+        try {
+          session = sessions.resolve(request);
+        } catch (error) {
+          if (!(error instanceof HttpError) || error.status !== 401) throw error;
+          const unauthenticatedLimit = limiter.take(
+            `unauthenticated:${address}:${route}`,
+            typeof options.ipLimit === "number" ? options.ipLimit : 120,
+          );
+          if (unauthenticatedLimit !== undefined) {
+            throw new HttpError(429, "Too many requests", unauthenticatedLimit);
+          }
+          throw error;
+        }
+        if (options.ipLimit !== false) {
+          const ipLimit = limiter.take(`client:${address}:${route}`, options.ipLimit ?? 120);
+          if (ipLimit !== undefined) throw new HttpError(429, "Too many requests", ipLimit);
+        }
       }
 
       const input = await readJson(request, parse);
-      const session = options.public ? undefined : sessions.resolve(request);
       let wallet: string | undefined;
       if (session) {
         const sessionLimit = limiter.take(`session:${session.sessionId}:${route}`, options.sessionLimit ?? 30);
@@ -318,6 +338,11 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
       if (!session && wallet && options.walletLimit !== undefined) {
         const walletLimit = limiter.take(`wallet:${wallet}:${route}`, options.walletLimit);
         if (walletLimit !== undefined) throw new HttpError(429, "Too many requests", walletLimit);
+      }
+
+      if (!options.public && options.globalLimit !== undefined) {
+        const globalLimit = limiter.take(`global:${route}`, options.globalLimit);
+        if (globalLimit !== undefined) throw new HttpError(429, "Too many requests", globalLimit);
       }
 
       let release: (() => void) | undefined;
