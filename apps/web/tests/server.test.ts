@@ -8,6 +8,33 @@ import { SessionStore } from "../lib/server/sessions";
 
 const origin = "http://localhost:3000";
 const ED25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function base58Encode(bytes: Uint8Array): string {
+  const encoded: number[] = [0];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let index = 0; index < encoded.length; index += 1) {
+      const value = (encoded[index] ?? 0) * 256 + carry;
+      encoded[index] = value % 58;
+      carry = Math.floor(value / 58);
+    }
+    while (carry > 0) {
+      encoded.push(carry % 58);
+      carry = Math.floor(carry / 58);
+    }
+  }
+  let leadingZeroes = 0;
+  while (leadingZeroes < bytes.length && bytes[leadingZeroes] === 0) leadingZeroes += 1;
+  return "1".repeat(leadingZeroes) + encoded.reverse().map((digit) => BASE58_ALPHABET[digit]).join("");
+}
+
+function expectedSignature(signedBytes: Uint8Array): string {
+  const transaction = VersionedTransaction.deserialize(Buffer.from(signedBytes));
+  const signature = transaction.signatures[0];
+  if (!signature) throw new Error("Missing transaction signature");
+  return base58Encode(signature);
+}
 
 function request(route: string, body: unknown, options: { cookie?: string; origin?: string; contentType?: string; fetchSite?: string } = {}) {
   const headers = new Headers({
@@ -106,7 +133,7 @@ async function signIn(
 }
 
 async function submitPreparedTransaction(
-  options: Pick<ApplicationDependencies, "getSignatureStatus" | "now" | "sleep">,
+  options: Pick<ApplicationDependencies, "getSignatureStatus" | "now" | "sleep" | "submit">,
 ) {
   return withSpendLimit("1000000000", async () => {
     const owner = Keypair.generate();
@@ -114,7 +141,11 @@ async function submitPreparedTransaction(
     let submittedBytes: Uint8Array | undefined;
     const submit = vi.fn(async (bytes: Uint8Array) => {
       submittedBytes = Buffer.from(bytes);
-      return "mock-devnet-signature";
+      if (options.submit) return options.submit(bytes);
+      else {
+        submittedBytes = Buffer.from(bytes);
+        return expectedSignature(bytes);
+      }
     });
     const app = handlers({
       ...options,
@@ -388,10 +419,11 @@ describe("confirmation authorization and abuse controls", () => {
     let signedSnapshot = Buffer.alloc(0);
     const submit = vi.fn(async (bytes: Uint8Array) => {
       signedSnapshot = Buffer.from(bytes);
-      return "mock-devnet-signature";
+      return expectedSignature(bytes);
     });
+    let expected = "";
     const getSignatureStatus = vi.fn(async (signature: string) => {
-      expect(signature).toBe("mock-devnet-signature");
+      expected = signature;
       return {
         slot: 123,
         confirmations: 1,
@@ -431,10 +463,11 @@ describe("confirmation authorization and abuse controls", () => {
     const signedBase64 = Buffer.from(signed.serialize()).toString("base64");
     const submitted = await app.submit(request("submit", { id: card.id, signed: signedBase64 }, { cookie }));
     expect(submitted.status).toBe(200);
-    expect(await submitted.json()).toEqual({ signature: "mock-devnet-signature" });
+    const submittedJson = await submitted.json();
+    expect(submittedJson.signature).toBe(expected);
     expect(signedSnapshot.toString("base64")).toBe(signedBase64);
     expect(submit).toHaveBeenCalledTimes(1);
-    expect(getSignatureStatus).toHaveBeenCalledWith("mock-devnet-signature");
+    expect(getSignatureStatus).toHaveBeenCalledWith(expected);
     });
   });
 
@@ -483,6 +516,69 @@ describe("confirmation authorization and abuse controls", () => {
     expect(result.submit).toHaveBeenCalledTimes(1);
     expect((await result.retry()).status).toBe(409);
     expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles an ambiguous send exception through the derived signature and confirms success", async () => {
+    const submit = vi.fn(async (bytes: Uint8Array) => {
+      expect(bytes.length).toBeGreaterThan(0);
+      throw new Error("socket closed after broadcast");
+    });
+    const getSignatureStatus = vi.fn(async (signature: string) => ({
+      slot: 123,
+      confirmations: 1,
+      err: null,
+      confirmationStatus: "confirmed" as const,
+      signature,
+    }));
+    const result = await submitPreparedTransaction({ submit, getSignatureStatus });
+
+    expect(result.response.status).toBe(200);
+    const responseJson = await result.response.json();
+    expect(responseJson.signature).toBe(getSignatureStatus.mock.calls[0]?.[0]);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+    expect(result.submittedBytes).toBeDefined();
+    expect(getSignatureStatus).toHaveBeenCalledWith(
+      expectedSignature(result.submittedBytes ?? new Uint8Array()),
+    );
+    expect((await result.retry()).status).toBe(409);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a submission RPC signature that differs from the verified signed bytes", async () => {
+    const submit = vi.fn(async (bytes: Uint8Array) => {
+      expect(bytes.length).toBeGreaterThan(0);
+      return "different-rpc-signature";
+    });
+    const getSignatureStatus = vi.fn(async () => null);
+    const result = await submitPreparedTransaction({ submit, getSignatureStatus });
+
+    expect(result.response.status).toBe(504);
+    expect((await result.response.json()).error).toMatch(/different signature.*unconfirmed.*Do not submit again/);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+    expect(getSignatureStatus).not.toHaveBeenCalled();
+    expect((await result.retry()).status).toBe(409);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles an ambiguous send exception and reports an on-chain failure", async () => {
+    const submit = vi.fn(async (bytes: Uint8Array) => {
+      expect(bytes.length).toBeGreaterThan(0);
+      throw new Error("socket closed after broadcast");
+    });
+    const getSignatureStatus = vi.fn(async () => ({
+      slot: 123,
+      confirmations: 1,
+      err: { InstructionError: [0, { Custom: 1 }] },
+      confirmationStatus: "confirmed" as const,
+    }));
+    const result = await submitPreparedTransaction({ submit, getSignatureStatus });
+
+    expect(result.response.status).toBe(502);
+    expect((await result.response.json()).error).toMatch(/Transaction failed on Devnet/);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+    expect(getSignatureStatus).toHaveBeenCalledWith(
+      expectedSignature(result.submittedBytes ?? new Uint8Array()),
+    );
   });
 
   it("enforces below, exact, above and fee-inclusive spend limits through stage and build/inspect", async () => {

@@ -1,4 +1,4 @@
-import { Connection, type SignatureStatus } from "@solana/web3.js";
+import { Connection, VersionedTransaction, type SignatureStatus } from "@solana/web3.js";
 import {
   Base58PubkeySchema,
   PositiveBigIntWireSchema,
@@ -18,11 +18,17 @@ const DEFAULT_SPEND_LIMIT = APPROVED_MAX_SPEND_LAMPORTS.toString(10);
 const SIGNATURE_CONFIRMATION_TIMEOUT_MS = 30_000;
 const SIGNATURE_CONFIRMATION_POLL_MS = 500;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 type SignatureConfirmation =
   | { outcome: "confirmed" }
   | { outcome: "failed" }
   | { outcome: "unconfirmed"; reason: "timeout" | "rpc" };
+
+interface ConfirmedBroadcast {
+  signature: string;
+  confirmation: Extract<SignatureConfirmation, { outcome: "confirmed" }>;
+}
 
 async function confirmSignature(
   signature: string,
@@ -75,6 +81,29 @@ async function confirmSignature(
   }
 
   return { outcome: "unconfirmed", reason: "timeout" };
+}
+
+function expectedTransactionSignature(signedBytes: Uint8Array): string {
+  const transaction = VersionedTransaction.deserialize(Buffer.from(signedBytes));
+  const signature = transaction.signatures[0];
+  if (!signature || signature.length !== 64) throw new HttpError(400, "Invalid signed transaction");
+  const bytes = Buffer.from(signature);
+  const encoded: number[] = [0];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let index = 0; index < encoded.length; index += 1) {
+      const value = (encoded[index] ?? 0) * 256 + carry;
+      encoded[index] = value % 58;
+      carry = Math.floor(value / 58);
+    }
+    while (carry > 0) {
+      encoded.push(carry % 58);
+      carry = Math.floor(carry / 58);
+    }
+  }
+  let leadingZeroes = 0;
+  while (leadingZeroes < bytes.length && bytes[leadingZeroes] === 0) leadingZeroes += 1;
+  return "1".repeat(leadingZeroes) + encoded.reverse().map((digit) => BASE58_ALPHABET[digit]).join("");
 }
 
 function objectInput(input: unknown, keys: string[]): Record<string, unknown> {
@@ -381,13 +410,44 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
         if (signed.toString("base64") !== input.signed || signed.length > 1232) {
           throw new HttpError(400, "Invalid signed transaction");
         }
-        const signature = await gateway.submitAndConfirm(
+        const broadcast = await gateway.submitAndConfirm(
           () => currentGatewaySession(sessions, currentRequest),
           input.id,
           signed,
-          (snapshot) => submit(snapshot),
+          async (snapshot) => {
+            const expectedSignature = expectedTransactionSignature(snapshot);
+            let rpcSignature: string;
+            try {
+              rpcSignature = await submit(snapshot);
+            } catch {
+              const confirmation = await confirmSignature(expectedSignature, getSignatureStatus, now, sleep);
+              if (confirmation.outcome === "failed") {
+                throw new HttpError(502, `Transaction failed on Devnet (signature: ${expectedSignature})`);
+              }
+              if (confirmation.outcome === "unconfirmed") {
+                const reason = confirmation.reason === "rpc"
+                  ? "the Devnet RPC could not confirm it"
+                  : "the confirmation timed out";
+                throw new HttpError(
+                  504,
+                  `Transaction is unconfirmed because ${reason} (signature: ${expectedSignature}). Do not submit again; check Devnet status.`,
+                );
+              }
+              return { signature: expectedSignature, confirmation } satisfies ConfirmedBroadcast;
+            }
+            if (rpcSignature !== expectedSignature) {
+              throw new HttpError(
+                504,
+                `The submission RPC returned a different signature. The transaction outcome is unconfirmed (expected signature: ${expectedSignature}). Do not submit again; check Devnet status.`,
+              );
+            }
+            return rpcSignature;
+          },
         );
-        const confirmation = await confirmSignature(signature, getSignatureStatus, now, sleep);
+        const signature = typeof broadcast === "string" ? broadcast : broadcast.signature;
+        const confirmation = typeof broadcast === "string"
+          ? await confirmSignature(signature, getSignatureStatus, now, sleep)
+          : broadcast.confirmation;
         if (confirmation.outcome === "failed") {
           throw new HttpError(502, `Transaction failed on Devnet (signature: ${signature})`);
         }
