@@ -1,28 +1,13 @@
-import { applicationHandlers } from "../../../lib/server/application";
+import { dispatchApiRoute, notFound } from "../../../lib/server/route-dispatch";
 
 export const runtime = "nodejs";
 
-export async function POST(request: Request, context: { params: Promise<{ path: string[] }> }) {
+
+export async function POST(request: Request, context: { params: Promise<{ path?: unknown }> }) {
   const { path } = await context.params;
-  const route = path.join("/");
-  const handler = {
-    "session/challenge": applicationHandlers.challenge,
-    session: applicationHandlers.signIn,
-    "session/logout": applicationHandlers.logout,
-    parse: applicationHandlers.parse,
-    stage: applicationHandlers.stage,
-    confirm: applicationHandlers.confirm,
-    build: applicationHandlers.build,
-    explain: applicationHandlers.explain,
-    acknowledge: applicationHandlers.acknowledge,
-    handoff: applicationHandlers.handoff,
-    submit: applicationHandlers.submit,
-  }[route];
-  if (!handler) {
-    return Response.json({ error: "Not found" }, {
-      status: 404,
-      headers: { "cache-control": "no-store" },
-    });
+  if (!Array.isArray(path) || path.length === 0 ||
+      path.some((segment) => typeof segment !== "string" || segment.length === 0)) {
+    return notFound();
   }
-  return handler(request);
+  return dispatchApiRoute(path.join("/"), request);
 }

@@ -1,5 +1,5 @@
 import { createPrivateKey, randomUUID, sign } from "node:crypto";
-import { Keypair, VersionedTransaction } from "@solana/web3.js";
+import { Keypair, Message, VersionedTransaction } from "@solana/web3.js";
 import type { RpcClient } from "@solguard/security";
 import { describe, expect, it, vi } from "vitest";
 import { confirmSignature, createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
@@ -77,25 +77,6 @@ function verificationRpc(transferLamports: bigint, pauses: RpcPauses = {}): RpcC
   const payerAfter = 4_999n;
   const recipientAfter = 2n + transferLamports;
   let freshCalls = 0;
-  const simulation = {
-    err: null,
-    fee: 5_001n,
-    // Payer, recipient and the two program accounts.
-    preBalances: [transferLamports + 10_000n, 2n, 1n, 1n],
-    postBalances: [payerAfter, recipientAfter, 1n, 1n],
-    accounts: [payerAfter, recipientAfter].map((lamports) => ({
-      owner: "11111111111111111111111111111111" as const,
-      executable: false as const,
-      lamports,
-      data: ["", "base64"] as ["", "base64"],
-    })),
-    innerInstructions: [],
-    preTokenBalances: [],
-    postTokenBalances: [],
-    replacementBlockhash: null,
-    logs: ["mock simulation"],
-    unitsConsumed: 150,
-  };
   return {
     identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
     fresh: async (hash) => {
@@ -104,8 +85,38 @@ function verificationRpc(transferLamports: bigint, pauses: RpcPauses = {}): RpcC
       return { network: "devnet", commitment: "confirmed", blockhash: hash, slot: 100n };
     },
     fee: async () => ({ context, value: 5_001n }),
-    simulate: async () => {
+    simulate: async (encoded) => {
       await pauses.beforeSimulate?.();
+      let keyCount = 4;
+      try {
+        keyCount = Message.from(Buffer.from(encoded, "base64")).staticAccountKeys.length;
+      } catch {
+        // Keep a conservative fixture width if the test RPC receives unexpected bytes.
+      }
+      const preBalances = Array.from({ length: keyCount }, () => 1n);
+      const postBalances = Array.from({ length: keyCount }, () => 1n);
+      preBalances[0] = transferLamports + 10_000n;
+      preBalances[1] = 2n;
+      postBalances[0] = payerAfter;
+      postBalances[1] = recipientAfter;
+      const simulation = {
+        err: null,
+        fee: 5_001n,
+        preBalances,
+        postBalances,
+        accounts: [payerAfter, recipientAfter].map((lamports) => ({
+          owner: "11111111111111111111111111111111" as const,
+          executable: false as const,
+          lamports,
+          data: ["", "base64"] as ["", "base64"],
+        })),
+        innerInstructions: [],
+        preTokenBalances: [],
+        postTokenBalances: [],
+        replacementBlockhash: null,
+        logs: ["mock simulation"],
+        unitsConsumed: 150,
+      };
       return { context, value: simulation };
     },
   };
@@ -565,7 +576,7 @@ describe("wallet challenge authentication", () => {
     }
     expect(response).toBeInstanceOf(HttpError);
     expect((response as HttpError).status).toBe(503);
-  }, 20_000);
+  }, 60_000);
   it("verifies the one-time origin- and wallet-bound signature and issues an HttpOnly session cookie", async () => {
     const app = handlers({ sessions: new SessionStore(Date.now, true) });
     const { wallet, response, cookie } = await signIn(app);

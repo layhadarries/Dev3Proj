@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { POST } from "../app/api/[...path]/route";
+import { dispatchApiRoute } from "../lib/server/route-dispatch";
 import {
   clientAddress,
   errorResponse,
@@ -22,6 +23,59 @@ function request(headers: HeadersInit = {}, body?: string): Request {
 }
 
 describe("HTTP security boundaries", () => {
+  it("dispatches only registered API routes and returns a consistent 404 for inherited names", async () => {
+    const validRoutes = [
+      "session/challenge",
+      "session",
+      "session/logout",
+      "parse",
+      "stage",
+      "confirm",
+      "build",
+      "explain",
+      "acknowledge",
+      "handoff",
+      "submit",
+    ];
+    for (const route of validRoutes) {
+      const response = await POST(request({ origin: "https://solguard.example" }, "{}"), {
+        params: Promise.resolve({ path: route.split("/") }),
+      });
+      expect(response.status).not.toBe(404);
+    }
+
+    const unsupported = [
+      "",
+      "unknown",
+      "session/challenge/extra",
+      "Constructor",
+      "constructor",
+      "prototype",
+      "__proto__",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "SESSION",
+      "session/CHALLENGE",
+      "session//challenge",
+    ];
+    for (const route of unsupported) {
+      const direct = await dispatchApiRoute(route, request());
+      expect(direct.status).toBe(404);
+      expect(direct.headers.get("content-type")).toContain("application/json");
+      expect(direct.headers.get("cache-control")).toBe("no-store");
+      expect(await direct.json()).toEqual({ error: "Not found" });
+    }
+
+    for (const path of [undefined, [], ["session", ""], ["", "session"], ["session", 42]]) {
+      const response = await POST(request(), {
+        params: Promise.resolve({ path }),
+      });
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+  });
+
   it("dispatches the sign-in challenge route and rejects unknown paths", async () => {
     const body = JSON.stringify({ wallet: Keypair.generate().publicKey.toBase58() });
     const request = new Request("http://localhost/api/session/challenge", {

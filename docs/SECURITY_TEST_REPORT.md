@@ -210,6 +210,46 @@ alongside it. All counters are process-local, reset on restart and independent
 between instances. The checks were deterministic and mocked; no production
 ingress, live provider, or load/stress behavior was tested.
 
+## API route-dispatch hardening
+
+Review finding: the Next.js catch-all route indexed a normal JavaScript
+object with an untrusted `path.join("/")` string. JavaScript inherited names
+such as `constructor`, `prototype`, `toString`, `valueOf` and `__proto__`
+could resolve to non-handler values or prevent a valid 404 response.
+
+Remediation: route dispatch now uses an explicit `Map` allowlist containing
+only the eleven registered API handlers. Empty, nested, malformed, mixed-case,
+unknown and inherited-property names return the existing JSON 404 response
+with `Cache-Control: no-store`. The dispatch decision is exported for direct
+tests, but no wildcard or dynamic handler loading was introduced.
+
+The synchronized latest UI branch also added compute-budget instructions to
+the mock server transaction fixtures. The web RPC fixture now derives
+simulation balance-vector width from the actual legacy message account count
+and preserves the 5,001-lamport fee and four-account evidence shape. This
+was a test-fixture compatibility update only; no transaction policy or builder
+behavior was changed for this finding.
+
+Regression coverage includes all registered routes, inherited names,
+constructor/prototype names, mixed-case and malformed segments, JSON 404
+content type and non-cacheable responses. Unsupported routes use no
+authentication, agent, RPC or submit handler. Valid routes retain their
+existing handlers and security checks.
+
+Verification for this finding:
+
+- Complete suite before the route fix: 296 tests (96 security, 93 agent,
+  107 web).
+- Complete suite after the route fix: 297 tests (96 security, 93 agent,
+  108 web).
+- Web V8 coverage: 90.02% statements, 84.10% branches, 92.46% functions,
+  94.56% lines.
+- Route-dispatch decision branches are covered by direct helper and HTTP
+  catch-all tests, including inherited-property names and malformed paths.
+- `pnpm lint`, `pnpm typecheck`, `pnpm build` and
+  `pnpm audit --audit-level high` passed. Audit remains at four moderate
+  dependency findings and no high-severity finding at this threshold.
+
 ## Bounded transaction broadcast
 
 ### Test count and coverage
