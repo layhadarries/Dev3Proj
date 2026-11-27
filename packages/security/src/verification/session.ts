@@ -36,11 +36,13 @@ export function createConfirmationGateway(policy: Omit<VerifyDeps,"network"|"wal
   }
   const deps = (e:Entry):VerifyDeps => ({...policy,network:"devnet",walletPublicKey:e.intent.payer});
   return {
-    /** Session-checked, non-consuming read. Returns a clone of the gateway-held intent; never mutates the record. */
+    /** Non-consuming read available only in the confirmed (pre-inspection) phase. */
     intent(resolve:CurrentSession,id:string):Intent {
-      const s = session(resolve), e = entries.get(id);
+      const s=session(resolve), e=entries.get(id);
       if (!e || e.owner !== s.sessionId || e.intent.payer !== s.walletPublicKey) throw Error("INVALID_CONFIRMATION");
       if (expired(e)) {entries.delete(id); throw Error("CONFIRMATION_EXPIRED");}
+      if (e.phase === "draft") throw Error("INTENT_NOT_CONFIRMED");
+      if (e.phase !== "confirmed") throw Error("INVALID_CONFIRMATION_PHASE");
       return structuredClone(e.intent);
     },
     stage(resolve:CurrentSession,input:unknown) {
@@ -57,7 +59,12 @@ export function createConfirmationGateway(policy: Omit<VerifyDeps,"network"|"wal
     /** Invoke only for a CSRF-protected explicit user gesture on the displayed server draft. */
     confirm(resolve:CurrentSession,id:string) {
       const e=get(resolve,id,"draft");
-      e.intent.confirmedAt=now(); e.phase="confirmed";
+      const confirmedAt=now();
+      e.intent.confirmedAt=confirmedAt; e.phase="confirmed";
+      // Restart the TTL window: the 60 s budget covers build→inspect→handoff→submit,
+      // not the user's card-reading time. The wall-clock expiry tracks the new window.
+      e.deadline=performance.now()+APPROVAL_TTL_MS;
+      e.expiresAt=confirmedAt+APPROVAL_TTL_MS;
       return structuredClone(e.intent);
     },
     async inspect(resolve:CurrentSession,id:string,proposal:unknown) {
