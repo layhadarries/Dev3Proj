@@ -265,3 +265,26 @@ Passed:
 - `pnpm build`
 - `pnpm audit --audit-level high`: exit 0; 4 moderate dependency findings and
   no high-severity finding at the requested threshold.
+
+## Transaction commitment accuracy
+
+The complete suite increased from 278 to 286 tests after direct
+commitment-classification coverage: 96 security, 93 agent and 97 web tests.
+Focused tests cover processed-success, processed-error and missing-status
+sequences, confirmed/finalized success and failure, contradictory metadata,
+malformed statuses, RPC polling failure and late responses. Processed status
+is never promoted to definitive success or failure.
+
+Final V8 coverage: security 92.03% statements / 88.95% branches /
+96.07% functions / 93.84% lines; agent 99.31% / 97.97% / 100.00% /
+99.15%; web 89.84% / 83.76% / 92.08% / 94.32%. The web application
+classification and submission implementation now has its new processed,
+contradictory, missing-status and definitive terminal outcomes exercised
+deterministically.
+
+The web submission implementation now requires explicit or legacy-valid
+confirmed/finalized commitment with coherent error evidence. Confirmation
+processing has the existing 30-second deadline; the broadcast deadline remains
+10 seconds. No test broadcasted funds or used a live wallet. Mocked RPC and
+controlled clocks exercise fork-sensitive status transitions but cannot prove
+all provider schedules or network behavior.

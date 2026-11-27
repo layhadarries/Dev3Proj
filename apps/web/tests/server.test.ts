@@ -2,7 +2,7 @@ import { createPrivateKey, randomUUID, sign } from "node:crypto";
 import { Keypair, VersionedTransaction } from "@solana/web3.js";
 import type { RpcClient } from "@solguard/security";
 import { describe, expect, it, vi } from "vitest";
-import { createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
+import { confirmSignature, createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
 import { InFlightLimiter, RateLimiter } from "../lib/server/http";
 import { SessionStore } from "../lib/server/sessions";
 
@@ -149,7 +149,7 @@ async function signIn(
 }
 
 async function submitPreparedTransaction(
-  options: Pick<ApplicationDependencies, "getSignatureStatus" | "now" | "sleep" | "submit" | "broadcastTimeoutMs">,
+  options: Pick<ApplicationDependencies, "getSignatureStatus" | "now" | "sleep" | "submit" | "broadcastTimeoutMs" | "confirmationTimeoutMs">,
 ) {
   return withSpendLimit("1000000000", async () => {
     const owner = Keypair.generate();
@@ -215,6 +215,161 @@ async function withSpendLimit<T>(value: string | undefined, run: () => Promise<T
     else process.env.SOLGUARD_MAX_SPEND_LAMPORTS = previous;
   }
 }
+
+describe("transaction commitment classification", () => {
+  const confirmedSuccess = {
+    slot: 100,
+    confirmations: 2,
+    err: null,
+    confirmationStatus: "confirmed" as const,
+  };
+  const finalizedSuccess = {
+    slot: 101,
+    confirmations: null,
+    err: null,
+    confirmationStatus: "finalized" as const,
+  };
+  const confirmedFailure = {
+    slot: 102,
+    confirmations: 1,
+    err: { InstructionError: [0, { Custom: 1 }] },
+    confirmationStatus: "confirmed" as const,
+  };
+  const finalizedFailure = {
+    slot: 103,
+    confirmations: null,
+    err: { InstructionError: [0, { Custom: 2 }] },
+    confirmationStatus: "finalized" as const,
+  };
+  const processedSuccess = {
+    slot: 99,
+    confirmations: 0,
+    err: null,
+    confirmationStatus: "processed" as const,
+  };
+  const processedFailure = {
+    slot: 99,
+    confirmations: 0,
+    err: { InstructionError: [0, { Custom: 1 }] },
+    confirmationStatus: "processed" as const,
+  };
+
+  function clock() {
+    let time = 1_000;
+    return {
+      now: () => time,
+      sleep: async (milliseconds: number) => { time += milliseconds; },
+    };
+  }
+
+  it("continues from processed success and processed failure to confirmed success", async () => {
+    for (const processed of [processedSuccess, processedFailure]) {
+      let call = 0;
+      const getStatus = vi.fn(async () => call++ === 0 ? processed : confirmedSuccess);
+      const { now, sleep } = clock();
+      expect(await confirmSignature("signature", getStatus, now, sleep)).toEqual({ outcome: "confirmed" });
+      expect(getStatus).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("continues from processed failure to confirmed and finalized failure", async () => {
+    for (const terminal of [confirmedFailure, finalizedFailure]) {
+      let call = 0;
+      const getStatus = vi.fn(async () => call++ === 0 ? processedFailure : terminal);
+      const { now, sleep } = clock();
+      expect(await confirmSignature("signature", getStatus, now, sleep)).toEqual({ outcome: "failed" });
+      expect(getStatus).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("continues after missing status and returns timeout for persistent processed success or failure", async () => {
+    for (const processed of [processedSuccess, processedFailure]) {
+      let call = 0;
+      const getStatus = vi.fn(async () => call++ === 0 ? null : processed);
+      const { now, sleep } = clock();
+      expect(await confirmSignature("signature", getStatus, now, sleep)).toEqual({
+        outcome: "unconfirmed",
+        reason: "timeout",
+      });
+      expect(getStatus.mock.calls.length).toBeGreaterThan(1);
+    }
+  });
+
+  it("accepts direct confirmed and finalized success/failure only at those commitments", async () => {
+    for (const [status, outcome] of [
+      [confirmedSuccess, "confirmed"],
+      [finalizedSuccess, "confirmed"],
+      [confirmedFailure, "failed"],
+      [finalizedFailure, "failed"],
+    ] as const) {
+      const { now, sleep } = clock();
+      expect(await confirmSignature("signature", vi.fn(async () => status), now, sleep)).toEqual({
+        outcome,
+      });
+    }
+  });
+
+  it("rejects contradictory and malformed confirmation metadata conservatively", async () => {
+    const contradictory = [
+      { ...confirmedSuccess, confirmations: 0 },
+      { ...finalizedSuccess, confirmations: 0 },
+      { ...confirmedSuccess, confirmations: -1 },
+      { ...confirmedSuccess, confirmationStatus: "unknown" },
+      { ...confirmedSuccess, confirmationStatus: "confirmed", slot: -1 },
+      { ...confirmedSuccess, err: "malformed" },
+      { ...confirmedSuccess, err: undefined },
+    ];
+    for (const status of contradictory) {
+      const { now, sleep } = clock();
+      const getStatus = vi.fn(async () => status as never);
+      expect(await confirmSignature("signature", getStatus, now, sleep)).toEqual({
+        outcome: "unconfirmed",
+        reason: "timeout",
+      });
+    }
+  });
+
+  it("requires evidence for missing, malformed and contradictory status objects", async () => {
+    const malformed = [
+      null,
+      {},
+      { confirmationStatus: "confirmed", err: null, confirmations: "many" },
+      { confirmationStatus: "finalized", err: null, slot: "unknown" },
+      { confirmationStatus: "confirmed", err: null, confirmations: null, slot: null },
+    ];
+    for (const status of malformed) {
+      const { now, sleep } = clock();
+      expect(await confirmSignature("signature", vi.fn(async () => status as never), now, sleep)).toEqual({
+        outcome: "unconfirmed",
+        reason: "timeout",
+      });
+    }
+  });
+
+  it("returns RPC polling failure, not transaction failure", async () => {
+    const { now, sleep } = clock();
+    expect(await confirmSignature(
+      "signature",
+      vi.fn(async () => { throw new Error("RPC unavailable"); }),
+      now,
+      sleep,
+    )).toEqual({ outcome: "unconfirmed", reason: "rpc" });
+  });
+
+  it("returns timeout for a response that arrives only after the deadline", async () => {
+    const late = deferredPromise<typeof confirmedSuccess>();
+    const resultPromise = confirmSignature(
+      "signature",
+      vi.fn(async () => late.promise as never),
+      () => 1_000,
+      async () => undefined,
+      5,
+    );
+    expect(await resultPromise).toEqual({ outcome: "unconfirmed", reason: "timeout" });
+    late.resolve(confirmedSuccess);
+    await Promise.resolve();
+  });
+});
 
 describe("wallet challenge authentication", () => {
   it("verifies the one-time origin- and wallet-bound signature and issues an HttpOnly session cookie", async () => {

@@ -203,6 +203,18 @@ commitment and no error is reported as success. Underlying RPC promises that
 resolve or reject after the application deadline are observed and handled
 without an automatic retry or resubmission.
 
+Signature status classification is commitment-aware. `processed` is always
+provisional: an error or successful balance path observed at `processed` is
+continued until a confirmed/finalized status or the 30-second deadline. A
+transaction that disappears between RPC polls remains unknown and does not
+become success or failure. Only confirmed/finalized status with valid error
+evidence is definitive: `err: null` is success and a structured on-chain error
+is failure. Malformed commitment names, contradictory counts or slots,
+missing `err` evidence, and ambiguous RPC responses are polled or timed out
+rather than guessed. The legacy `confirmations === null` fallback is used only
+when no explicit commitment metadata exists; explicit `processed`,
+`confirmed`, or `finalized` information is never overridden by that fallback.
+
 ## Low-level verification (diagnostics and standalone demo)
 
 These primitives are not a substitute for the gateway in application routes:

@@ -65,13 +65,14 @@ async function broadcastWithDeadline(
   }
 }
 
-async function confirmSignature(
+export async function confirmSignature(
   signature: string,
   getStatus: (signature: string) => Promise<SignatureStatus | null>,
   now: () => number,
   sleep: (milliseconds: number) => Promise<void>,
+  timeoutMs: number = SIGNATURE_CONFIRMATION_TIMEOUT_MS,
 ): Promise<SignatureConfirmation> {
-  const deadline = now() + SIGNATURE_CONFIRMATION_TIMEOUT_MS;
+  const deadline = now() + timeoutMs;
 
   while (now() < deadline) {
     const remaining = deadline - now();
@@ -98,16 +99,52 @@ async function confirmSignature(
 
     if (result.kind === "timeout") return { outcome: "unconfirmed", reason: "timeout" };
     if (result.kind === "rpc-error") return { outcome: "unconfirmed", reason: "rpc" };
-    if (result.status?.err !== undefined && result.status.err !== null) {
-      return { outcome: "failed" };
-    }
-    if (
-      result.status &&
-      (result.status.confirmationStatus === "confirmed" ||
-        result.status.confirmationStatus === "finalized" ||
-        result.status.confirmations === null)
-    ) {
-      return { outcome: "confirmed" };
+    const status = result.status;
+    if (!status || typeof status !== "object") {
+      // Missing status or malformed RPC data remains provisional.
+    } else {
+      const explicitCommitment = status.confirmationStatus;
+      const confirmations = status.confirmations;
+      if (
+        explicitCommitment !== undefined &&
+        explicitCommitment !== "processed" &&
+        explicitCommitment !== "confirmed" &&
+        explicitCommitment !== "finalized"
+      ) {
+        // Unknown or malformed commitment metadata is never a definitive result.
+      } else if (explicitCommitment === "processed") {
+        // Processed state is provisional, even if err or confirmations look final.
+      } else if (explicitCommitment === "confirmed" || explicitCommitment === "finalized") {
+        if (
+          (confirmations !== undefined && confirmations !== null &&
+            (!Number.isSafeInteger(confirmations) || confirmations < 0)) ||
+          (status.slot !== undefined &&
+            (!Number.isSafeInteger(status.slot) || status.slot < 0))
+        ) {
+          // Contradictory or malformed slot/count metadata is conservative.
+        } else if (explicitCommitment === "confirmed" && confirmations === 0) {
+          // A confirmed label cannot override zero confirmations.
+        } else if (explicitCommitment === "finalized" && confirmations !== undefined &&
+          confirmations !== null && confirmations < 1) {
+          // A finalized label must not coexist with zero confirmations.
+        } else if (status.err === undefined) {
+          // Missing err evidence is ambiguous; continue polling.
+        } else if (status.err === null) {
+          return { outcome: "confirmed" };
+        } else if (typeof status.err === "object" && status.err !== null) {
+          return { outcome: "failed" };
+        }
+      } else if (
+        explicitCommitment === undefined &&
+        status.confirmations === null &&
+        status.err !== undefined &&
+        (typeof status.err === "object" || status.err === null)
+      ) {
+        // Legacy API fallback: confirmations null means no exact count, but
+        // only when there is no explicit contradictory commitment metadata.
+        if (status.err === null) return { outcome: "confirmed" };
+        return { outcome: "failed" };
+      }
     }
 
     const nextDelay = Math.min(SIGNATURE_CONFIRMATION_POLL_MS, deadline - now());
@@ -225,6 +262,7 @@ export interface ApplicationDependencies {
   getSignatureStatus?: (signature: string) => Promise<SignatureStatus | null>;
   sleep?: (milliseconds: number) => Promise<void>;
   broadcastTimeoutMs?: number;
+  confirmationTimeoutMs?: number;
 }
 
 function configuredSpendLimit(): bigint {
@@ -265,6 +303,10 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
   const broadcastTimeoutMs = dependencies.broadcastTimeoutMs ?? BROADCAST_TIMEOUT_MS;
   if (!Number.isSafeInteger(broadcastTimeoutMs) || broadcastTimeoutMs < 1 || broadcastTimeoutMs > 30_000) {
     throw new RangeError("Broadcast timeout must be between 1 and 30000 milliseconds");
+  }
+  const confirmationTimeoutMs = dependencies.confirmationTimeoutMs ?? SIGNATURE_CONFIRMATION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(confirmationTimeoutMs) || confirmationTimeoutMs < 1 || confirmationTimeoutMs > 30_000) {
+    throw new RangeError("Confirmation timeout must be between 1 and 30000 milliseconds");
   }
   const sessions = dependencies.sessions ?? new SessionStore(now);
   const limiter = dependencies.rateLimiter ?? new RateLimiter();
@@ -564,7 +606,13 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
             const expectedSignature = expectedTransactionSignature(snapshot);
             const broadcast = await broadcastWithDeadline(submit, snapshot, broadcastTimeoutMs);
             if (broadcast.outcome === "thrown" || broadcast.outcome === "timeout") {
-              const confirmation = await confirmSignature(expectedSignature, getSignatureStatus, now, sleep);
+              const confirmation = await confirmSignature(
+                expectedSignature,
+                getSignatureStatus,
+                now,
+                sleep,
+                confirmationTimeoutMs,
+              );
               if (confirmation.outcome === "failed") {
                 throw new HttpError(502, `Transaction failed on Devnet (signature: ${expectedSignature})`);
               }
@@ -593,7 +641,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
         );
         const signature = typeof broadcast === "string" ? broadcast : broadcast.signature;
         const confirmation = typeof broadcast === "string"
-          ? await confirmSignature(signature, getSignatureStatus, now, sleep)
+          ? await confirmSignature(signature, getSignatureStatus, now, sleep, confirmationTimeoutMs)
           : broadcast.confirmation;
         if (confirmation.outcome === "failed") {
           throw new HttpError(502, `Transaction failed on Devnet (signature: ${signature})`);
