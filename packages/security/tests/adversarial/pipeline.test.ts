@@ -74,6 +74,105 @@ function setup(initial = 2n) {
     deps: { rpc, walletPublicKey: String(p), network: "devnet" as const },
   };
 }
+
+function gatewayFixture(initial = 2n) {
+  const {rpc} = setup(initial);
+  let now = 100;
+  const identity = {sessionId:"fixture",walletPublicKey:String(p),network:"devnet" as const};
+  const resolve = () => identity;
+  const gate = createConfirmationGateway({rpc,now:()=>now});
+  const {id} = gate.stage(resolve,{recipient:String(r),amountBaseUnits:"8"});
+  const built = {intentId:id,messageBase64:msg.toString("base64"),messageHash:hashMessage(msg),
+    recentBlockhash:hash,lastValidBlockHeight:123};
+  return {rpc,identity,resolve,gate,id,built,advance:(ms:number)=>{now+=ms;}};
+}
+
+it("reads only confirmed intents, returns defensive copies, and starts a fresh confirmation window", async () => {
+  const {gate,resolve,id,built,advance}=gatewayFixture();
+  expect(()=>gate.intent(resolve,id)).toThrow(/INTENT_NOT_CONFIRMED/);
+  advance(APPROVAL_TTL_MS-1);
+  const confirmation=gate.confirm(resolve,id);
+  confirmation.amountBaseUnits=9n;
+  advance(1);
+  const read=gate.intent(resolve,id);
+  expect(read.amountBaseUnits).toBe(8n);
+  read.payer=String(r);
+  expect(gate.intent(resolve,id).payer).toBe(String(p));
+  const checking=gate.inspect(resolve,id,built);
+  expect(()=>gate.intent(resolve,id)).toThrow(/PHASE/);
+  await expect(gate.inspect(resolve,id,built)).rejects.toThrow(/PHASE/);
+  expect((await checking).verdict).toBe("PASS");
+  expect(()=>gate.intent(resolve,id)).toThrow(/PHASE/);
+  const handing=gate.handoff(resolve,id);
+  expect(()=>gate.intent(resolve,id)).toThrow(/PHASE/);
+  await expect(gate.handoff(resolve,id)).rejects.toThrow(/PHASE/);
+  await handing;
+  expect(()=>gate.intent(resolve,id)).toThrow(/PHASE/);
+});
+
+it("rejects foreign sessions, changed wallets, incorrect networks and expired confirmed records", () => {
+  const {gate,resolve,id,advance}=gatewayFixture();
+  gate.confirm(resolve,id);
+  expect(()=>gate.intent(()=>({...resolve(),sessionId:"other"}),id)).toThrow(/INVALID_CONFIRMATION/);
+  expect(()=>gate.intent(()=>({...resolve(),walletPublicKey:String(r)}),id)).toThrow(/INVALID_CONFIRMATION/);
+  const wrongNetwork=JSON.parse('{"network":"mainnet-beta"}');
+  expect(()=>gate.intent(()=>({...resolve(),...wrongNetwork}),id)).toThrow(/DEVNET/);
+  advance(APPROVAL_TTL_MS);
+  expect(()=>gate.intent(resolve,id)).toThrow(/EXPIRED/);
+  expect(()=>gate.intent(resolve,id)).toThrow(/INVALID_CONFIRMATION/);
+});
+
+it("uses the stored WARN and requires separate session-bound acknowledgement", async () => {
+  const first=gatewayFixture(0n);
+  first.gate.confirm(first.resolve,first.id);
+  const report=await first.gate.inspect(first.resolve,first.id,first.built);
+  expect(report.verdict).toBe("WARN");
+  report.verdict="PASS";
+  // Extra runtime arguments (e.g. a request flag) do not acknowledge a warning.
+  await expect(Reflect.apply(first.gate.handoff,first.gate,[first.resolve,first.id,true])).rejects.toThrow(/acknowledgement/);
+  await expect(first.gate.handoff(first.resolve,first.id)).rejects.toThrow(/INVALID_CONFIRMATION/);
+  const {gate,resolve,id,built}=gatewayFixture(0n);
+  gate.confirm(resolve,id);
+  await gate.inspect(resolve,id,built);
+  expect(()=>gate.acknowledgeWarning(()=>({...resolve(),sessionId:"other"}),id)).toThrow(/INVALID_CONFIRMATION/);
+  gate.acknowledgeWarning(resolve,id);
+  expect(()=>gate.acknowledgeWarning(resolve,id)).toThrow(/ACKNOWLEDGEMENT/);
+  expect((await gate.handoff(resolve,id)).subarray(65)).toEqual(msg);
+});
+
+it.each(["inspect","handoff","submit"] as const)("fails closed if the session changes during %s", async (phase) => {
+  const {rpc,identity,gate,resolve,id,built}=gatewayFixture();
+  gate.confirm(resolve,id);
+  if (phase!=="inspect") await gate.inspect(resolve,id,built);
+  const wire=phase==="submit" ? await gate.handoff(resolve,id) : Buffer.alloc(0);
+  if (phase==="submit") wire.set(ed25519.sign(msg,signer.secretKey.slice(0,32)),1);
+  const send=vi.fn();
+  const pending=phase==="inspect" ? gate.inspect(resolve,id,built)
+    : phase==="handoff" ? gate.handoff(resolve,id)
+    : gate.submitAndConfirm(resolve,id,wire,send);
+  identity.walletPublicKey=String(r);
+  await expect(pending).rejects.toThrow();
+  expect(send).not.toHaveBeenCalled();
+  expect(rpc.fresh).toHaveBeenCalled();
+  identity.walletPublicKey=String(p);
+  expect(()=>gate.intent(resolve,id)).toThrow(/INVALID_CONFIRMATION/);
+});
+
+it("submits the private signed snapshot once despite input mutation during freshness checks", async () => {
+  const {gate,resolve,id,built}=gatewayFixture();
+  gate.confirm(resolve,id);
+  await gate.inspect(resolve,id,built);
+  const wire=await gate.handoff(resolve,id);
+  wire.set(ed25519.sign(msg,signer.secretKey.slice(0,32)),1);
+  const expected=Buffer.from(wire);
+  const send=vi.fn(async (bytes:Uint8Array)=>{expect(bytes).toEqual(expected);});
+  const pending=gate.submitAndConfirm(resolve,id,wire,send);
+  wire.fill(0);
+  await expect(gate.submitAndConfirm(resolve,id,wire,send)).rejects.toThrow(/INVALID_CONFIRMATION/);
+  await pending;
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(()=>gate.intent(resolve,id)).toThrow(/INVALID_CONFIRMATION/);
+});
 it("gates the exact signed snapshot on authenticated confirmation and consumes it once", async () => {
   const {rpc}=setup(), gate=createConfirmationGateway({rpc});
   const session=()=>({sessionId:"fixture-a",walletPublicKey:String(p),network:"devnet" as const});

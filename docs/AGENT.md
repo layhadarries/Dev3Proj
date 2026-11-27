@@ -12,10 +12,11 @@ Contracts: `packages/shared` (decimal strings on the wire, `bigint` in code via 
 4. UI calls `build` with `{ confirmationId }` only and gets `{ transaction, report }`. The handler
    reads the gateway-held intent, builds from it and runs `gateway.inspect`. A 409 means start again.
 5. UI calls `explain` with the report. A `BLOCK` report has already consumed the confirmation.
+   For `WARN`, an explicit, CSRF-protected click calls `gateway.acknowledgeWarning(session, id)`.
 6. App route: `gateway.handoff`, sign only in the wallet, then `gateway.submitAndConfirm`. See
    `SECURITY_API.md`. Never pass the builder's bytes to the wallet.
 
-All of steps 2 to 6 share one 60-second window starting at `stage`.
+The card expires 60 seconds after `stage`. `confirm` starts a new 60-second window for the rest.
 
 ## Next.js route
 

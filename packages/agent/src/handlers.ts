@@ -25,7 +25,7 @@ export interface AgentDependencies {
 }
 
 /** Gateway errors that mean the user has to start over. */
-const REJECTED = /^(INVALID_CONFIRMATION|INVALID_CONFIRMATION_PHASE|CONFIRMATION_EXPIRED|AUTHENTICATED_DEVNET_SESSION_REQUIRED)$/;
+const REJECTED = /^(INTENT_NOT_CONFIRMED|INVALID_CONFIRMATION|INVALID_CONFIRMATION_PHASE|CONFIRMATION_EXPIRED|AUTHENTICATED_DEVNET_SESSION_REQUIRED)$/;
 class NotConfirmed extends Error {}
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
@@ -67,7 +67,7 @@ export function agentHandlers({ rpc, llm, confirmations }: AgentDependencies) {
       handle(request, BuildRequest, async ({ confirmationId }) => {
         const gateway = confirmations(request);
         const intent = gateway.intent(confirmationId);
-        // A staged but unconfirmed draft is readable and has no confirmation time.
+        // The gateway refuses unconfirmed drafts; checked again in case another one is plugged in.
         if (intent.confirmedAt <= 0) throw new NotConfirmed();
         const transaction = await buildTransfer(intent, rpc);
         const report = await gateway.inspect(confirmationId, transaction);

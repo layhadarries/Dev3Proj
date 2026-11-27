@@ -34,6 +34,8 @@ if (!response.ok) throw new Error(`build failed with ${response.status}`);
 const report = parseReport(body.report);
 console.log({ verdict: report.verdict, rules: report.findings.map((f) => f.ruleId), explanation: explainReport(body.report).headline });
 if (report.verdict !== "BLOCK") {
-  const wire = await gateway.handoff(session, id, report.verdict === "WARN");
+  // Stands in for the user's explicit click on the warning.
+  if (report.verdict === "WARN") gateway.acknowledgeWarning(session, id);
+  const wire = await gateway.handoff(session, id);
   console.log({ handoffBytes: wire.length, matchesBuilt: wire.subarray(65).toString("base64") === body.transaction.messageBase64 });
 } else process.exitCode = 1;
