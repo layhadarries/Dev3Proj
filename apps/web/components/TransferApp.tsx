@@ -73,7 +73,7 @@ export function TransferApp() {
 
   function connect() {
     const found = findWallet();
-    if (!found) return setError("No Solana wallet found. Install Phantom or Solflare and set it to Devnet.");
+    if (!found) return setError("No Solana wallet found. Install MetaMask, Phantom or Solflare and set it to Devnet.");
     void run("Connecting. Approve the sign-in message in your wallet.", () => signIn(api, found), (signedIn) => {
       setWallet(found);
       setAddress(signedIn);
