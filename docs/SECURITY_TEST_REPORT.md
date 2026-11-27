@@ -444,3 +444,20 @@ Final SG-01 verification:
 - `pnpm audit --audit-level high` passed with four moderate findings and no
   high-severity finding at this threshold.
 - Playwright 1.55.1 is a development-only browser test dependency.
+
+## Submission SDK transport policy
+
+The Devnet write connection explicitly disables the SDK HTTP rate-limit retry
+loop, independently of the existing validator-side forwarding setting
+(`maxRetries: 0`). Read-only status polling uses its own connection and retains
+its prior behavior. Preflight, the one-shot gateway, application deadlines and
+expected-signature reconciliation are unchanged.
+
+Regression tests exercise the actual configured SDK write transport with an
+injected synthetic fetch and check the exact signed wire, HTTP send attempt
+count, expected-signature status lookup and replay rejection. They cover HTTP
+200, 429, 500, 503 and an unresolved rate-limited submission. The tests do not
+contact a live RPC or broadcast funds. Execution of these added tests remains
+pending at this revision; no new passing test or coverage totals are claimed.
+The application deadline still does not guarantee cancellation of underlying
+network work or control retries by external infrastructure.

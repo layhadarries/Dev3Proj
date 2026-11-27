@@ -1,8 +1,9 @@
 import { createPrivateKey, randomUUID, sign } from "node:crypto";
 import { Keypair, Message, VersionedTransaction } from "@solana/web3.js";
 import type { RpcClient } from "@solguard/security";
+import bs58 from "bs58";
 import { describe, expect, it, vi } from "vitest";
-import { confirmSignature, createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
+import { confirmSignature, createApplicationHandlers, createDevnetSubmissionTransport, type ApplicationDependencies } from "../lib/server/application";
 import { HttpError, InFlightLimiter, RateLimiter } from "../lib/server/http";
 import { SessionStore } from "../lib/server/sessions";
 
@@ -230,6 +231,81 @@ async function withSpendLimit<T>(value: string | undefined, run: () => Promise<T
     else process.env.SOLGUARD_MAX_SPEND_LAMPORTS = previous;
   }
 }
+
+describe("SDK submission transport", () => {
+  function mockTransport(firstStatus: number) {
+    const sends: string[] = [];
+    const submit = createDevnetSubmissionTransport(async (input, init) => {
+      expect(String(input)).toBe("https://api.devnet.solana.com");
+      if (typeof init?.body !== "string") throw new Error("Expected JSON-RPC request body");
+      const rpc = JSON.parse(init.body);
+      expect(rpc.method).toBe("sendTransaction");
+      expect(rpc.params[1]).toMatchObject({
+        encoding: "base64",
+        skipPreflight: false,
+        maxRetries: 0,
+        preflightCommitment: "confirmed",
+      });
+      const wire = rpc.params[0] as string;
+      sends.push(wire);
+      if (sends.length === 1 && firstStatus !== 200) {
+        return new Response("synthetic RPC failure", { status: firstStatus });
+      }
+      // A retry would receive a valid receipt, making the attempt-count assertion essential.
+      const transaction = VersionedTransaction.deserialize(Buffer.from(wire, "base64"));
+      return Response.json({
+        jsonrpc: "2.0",
+        id: rpc.id,
+        result: bs58.encode(transaction.signatures[0]!),
+      });
+    });
+    return { submit, sends };
+  }
+
+  for (const firstStatus of [200, 429, 500, 503]) {
+    it(`makes exactly one SDK HTTP send attempt for HTTP ${firstStatus} and reconciles the original signature`, async () => {
+      const { submit, sends } = mockTransport(firstStatus);
+      const getSignatureStatus = vi.fn(async (_signature: string) => ({
+        slot: 123,
+        confirmations: 1,
+        err: null,
+        confirmationStatus: "confirmed" as const,
+      }));
+      const result = await submitPreparedTransaction({ submit, getSignatureStatus });
+      const signed = VersionedTransaction.deserialize(Buffer.from(result.signedBase64, "base64"));
+      const expected = bs58.encode(signed.signatures[0]!);
+
+      expect(result.response.status).toBe(200);
+      expect(await result.response.json()).toEqual({ signature: expected });
+      expect(getSignatureStatus).toHaveBeenCalledWith(expected);
+      expect(sends).toEqual([result.signedBase64]);
+      expect((await result.retry()).status).toBe(409);
+      expect(sends).toEqual([result.signedBase64]);
+    });
+  }
+
+  it("keeps an unreconciled HTTP 429 submission unknown without a second SDK send", async () => {
+    let time = 1_000;
+    const { submit, sends } = mockTransport(429);
+    const getSignatureStatus = vi.fn(async (_signature: string) => null);
+    const result = await submitPreparedTransaction({
+      submit,
+      getSignatureStatus,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+      confirmationTimeoutMs: 1_000,
+    });
+    const signed = VersionedTransaction.deserialize(Buffer.from(result.signedBase64, "base64"));
+    const expected = bs58.encode(signed.signatures[0]!);
+
+    expect(result.response.status).toBe(504);
+    expect((await result.response.json()).error).toMatch(/unconfirmed.*Do not submit again/);
+    expect(getSignatureStatus).toHaveBeenCalledWith(expected);
+    expect(sends).toEqual([result.signedBase64]);
+    expect((await result.retry()).status).toBe(409);
+    expect(sends).toEqual([result.signedBase64]);
+  });
+});
 
 describe("transaction commitment classification", () => {
   const confirmedSuccess = {

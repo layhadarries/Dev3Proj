@@ -1,4 +1,4 @@
-import { Connection, VersionedTransaction, type SignatureStatus } from "@solana/web3.js";
+import { Connection, VersionedTransaction, type ConnectionConfig, type SignatureStatus } from "@solana/web3.js";
 import {
   Base58PubkeySchema,
   PositiveBigIntWireSchema,
@@ -12,6 +12,23 @@ import { SessionStore } from "./sessions";
 
 const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com";
 const DEVNET_CONNECTION = new Connection(SOLANA_DEVNET_RPC, "confirmed");
+
+/** Separate write transport: maxRetries controls validator forwarding, not SDK HTTP retries. */
+export function createDevnetSubmissionTransport(fetchOverride?: ConnectionConfig["fetch"]) {
+  const connection = new Connection(SOLANA_DEVNET_RPC, {
+    commitment: "confirmed",
+    disableRetryOnRateLimit: true,
+    ...(fetchOverride ? { fetch: fetchOverride } : {}),
+  });
+  return (signedBytes: Uint8Array): Promise<string> =>
+    connection.sendRawTransaction(Buffer.from(signedBytes), {
+      skipPreflight: false,
+      maxRetries: 0,
+      preflightCommitment: "confirmed",
+    });
+}
+
+const submitDevnet = createDevnetSubmissionTransport();
 const MAX_SPEND_U64 = 0xffffffffffffffffn;
 const APPROVED_MAX_SPEND_LAMPORTS = 1_000_000_000n;
 const DEFAULT_SPEND_LIMIT = APPROVED_MAX_SPEND_LAMPORTS.toString(10);
@@ -325,12 +342,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
     }
     return { blockhash: recent.blockhash, lastValidBlockHeight };
   });
-  const submit = dependencies.submit ?? (async (signedBytes: Uint8Array) =>
-    DEVNET_CONNECTION.sendRawTransaction(Buffer.from(signedBytes), {
-      skipPreflight: false,
-      maxRetries: 0,
-      preflightCommitment: "confirmed",
-    }));
+  const submit = dependencies.submit ?? submitDevnet;
   const getSignatureStatus = dependencies.getSignatureStatus ?? (async (signature: string) => {
     const { value } = await DEVNET_CONNECTION.getSignatureStatuses([signature], {
       searchTransactionHistory: true,
