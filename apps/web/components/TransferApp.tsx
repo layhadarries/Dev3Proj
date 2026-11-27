@@ -162,7 +162,7 @@ export function TransferApp() {
               <p>Simulated balance changes (SOL)</p>
               <dl>
                 {step.review.explanation.balanceChanges.map((change) => (
-                  <div key={change.account} style={{ display: "contents" }}>
+                  <div key={change.account} className="contents">
                     <dt>{change.changeSol}</dt><dd>{change.account}</dd>
                   </div>
                 ))}

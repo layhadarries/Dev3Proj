@@ -16,3 +16,4 @@ li { overflow-wrap: anywhere; }
 .PASS { border-color: #1a7f37; border-width: 2px; }
 .WARN { border-color: #b7791f; border-width: 2px; }
 .BLOCK, .error { border-color: #c62828; border-width: 2px; }
+.contents { display: contents; }
