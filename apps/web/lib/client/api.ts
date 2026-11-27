@@ -4,6 +4,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** True when the reply carried the app's own error message. */
+    readonly explained = true,
   ) {
     super(message);
   }
@@ -27,7 +29,8 @@ export const createApi = (send: typeof fetch = (...args) => fetch(...args)): Api
     const data: unknown = await response.json().catch(() => null);
     if (!response.ok || data === null) {
       const error = (data as { error?: unknown } | null)?.error;
-      throw new ApiError(typeof error === "string" ? error : `${route} failed (HTTP ${response.status})`, response.status);
+      const explained = typeof error === "string";
+      throw new ApiError(explained ? error : `${route} failed (HTTP ${response.status})`, response.status, explained);
     }
     if (validate) return validate(data);
     return data as T;

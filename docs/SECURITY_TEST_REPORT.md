@@ -461,3 +461,15 @@ contact a live RPC or broadcast funds. Execution of these added tests remains
 pending at this revision; no new passing test or coverage totals are claimed.
 The application deadline still does not guarantee cancellation of underlying
 network work or control retries by external infrastructure.
+
+## Ledger status error representation
+
+Solana JSON-RPC supports fieldless transaction-error variants as strings and
+variants with associated data as objects. The classifier now recognizes known
+fieldless variants (including AccountNotFound) only with definitive commitment
+evidence. Processed observations and unknown strings remain provisional. Empty
+objects and arrays are not definitive error evidence, and malformed legacy slot
+metadata is rejected. Regression tests exercise confirmed, finalized, legacy,
+processed and malformed statuses plus the authenticated submit response and
+one-shot behavior. Full workspace execution and independent browser retesting
+remain pending; no passing results or coverage figures are claimed here.

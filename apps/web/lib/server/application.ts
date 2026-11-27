@@ -82,6 +82,31 @@ async function broadcastWithDeadline(
   }
 }
 
+// Solana serializes fieldless TransactionError variants as strings, while
+// variants with associated data are objects. Unknown strings stay provisional.
+// See https://solana.com/docs/rpc/json-structures#transaction-errors and
+// https://docs.rs/solana-sdk/5.0.0/solana_sdk/transaction/enum.TransactionError.html
+const STRING_TRANSACTION_ERRORS = new Set([
+  "AccountInUse", "AccountLoadedTwice", "AccountNotFound", "ProgramAccountNotFound",
+  "InsufficientFundsForFee", "InvalidAccountForFee", "AlreadyProcessed", "BlockhashNotFound",
+  "CallChainTooDeep", "MissingSignatureForFee", "InvalidAccountIndex", "SignatureFailure",
+  "InvalidProgramForExecution", "SanitizeFailure", "ClusterMaintenance", "AccountBorrowOutstanding",
+  "WouldExceedMaxBlockCostLimit", "UnsupportedVersion", "InvalidWritableAccount",
+  "WouldExceedMaxAccountCostLimit", "WouldExceedAccountDataBlockLimit", "TooManyAccountLocks",
+  "AddressLookupTableNotFound", "InvalidAddressLookupTableOwner", "InvalidAddressLookupTableData",
+  "InvalidAddressLookupTableIndex", "InvalidRentPayingAccount", "WouldExceedMaxVoteCostLimit",
+  "WouldExceedAccountDataTotalLimit", "MaxLoadedAccountsDataSizeExceeded",
+  "InvalidLoadedAccountsDataSizeLimit", "ResanitizationNeeded", "UnbalancedTransaction",
+  "ProgramCacheHitMaxLimit", "CommitCancelled", "BailOut",
+]);
+
+function isLedgerError(value: unknown): boolean {
+  if (typeof value === "string") return STRING_TRANSACTION_ERRORS.has(value);
+  // Preserve structured transaction errors, but reject empty objects and arrays.
+  return value !== null && typeof value === "object" &&
+    !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
 export async function confirmSignature(
   signature: string,
   getStatus: (signature: string) => Promise<SignatureStatus | null>,
@@ -148,14 +173,14 @@ export async function confirmSignature(
           // Missing err evidence is ambiguous; continue polling.
         } else if (status.err === null) {
           return { outcome: "confirmed" };
-        } else if (typeof status.err === "object" && status.err !== null) {
+        } else if (isLedgerError(status.err)) {
           return { outcome: "failed" };
         }
       } else if (
         explicitCommitment === undefined &&
         status.confirmations === null &&
-        status.err !== undefined &&
-        (typeof status.err === "object" || status.err === null)
+        (status.slot === undefined || (Number.isSafeInteger(status.slot) && status.slot >= 0)) &&
+        (status.err === null || isLedgerError(status.err))
       ) {
         // Legacy API fallback: confirmations null means no exact count, but
         // only when there is no explicit contradictory commitment metadata.

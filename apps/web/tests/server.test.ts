@@ -400,6 +400,53 @@ describe("transaction commitment classification", () => {
     }
   });
 
+  it("classifies known string-form ledger errors only with terminal commitment evidence", async () => {
+    for (const err of ["AccountNotFound", "BlockhashNotFound", "InsufficientFundsForFee"]) {
+      for (const status of [confirmedFailure, finalizedFailure, {
+        slot: 103, confirmations: null, err,
+      }]) {
+        const { now, sleep } = clock();
+        const getStatus = vi.fn(async () => ({ ...status, err }));
+        expect(await confirmSignature("signature", getStatus, now, sleep)).toEqual({ outcome: "failed" });
+        expect(getStatus).toHaveBeenCalledTimes(1);
+      }
+      const { now, sleep } = clock();
+      const getStatus = vi.fn(async () => ({ ...processedFailure, err }));
+      expect(await confirmSignature("signature", getStatus, now, sleep, 1_000)).toEqual({
+        outcome: "unconfirmed", reason: "timeout",
+      });
+    }
+  });
+
+  it("continues from a processed string-form failure to confirmed success", async () => {
+    let call = 0;
+    const getStatus = vi.fn(async () => call++ === 0
+      ? { ...processedFailure, err: "AccountNotFound" }
+      : confirmedSuccess);
+    const { now, sleep } = clock();
+    expect(await confirmSignature("signature", getStatus, now, sleep)).toEqual({ outcome: "confirmed" });
+    expect(getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps malformed or unknown error variants and contradictory legacy metadata provisional", async () => {
+    for (const status of [
+      { ...finalizedFailure, err: "" },
+      { ...finalizedFailure, err: "malformed" },
+      { ...finalizedFailure, err: [] },
+      { ...finalizedFailure, err: {} },
+      { ...finalizedFailure, err: "InstructionError" },
+      { ...confirmedFailure, confirmations: 0, err: "AccountNotFound" },
+      { slot: -1, confirmations: null, err: "AccountNotFound" },
+      { slot: 103, confirmations: null, err: "unknown variant" },
+      { ...processedFailure, confirmations: null, err: "AccountNotFound" },
+    ]) {
+      const { now, sleep } = clock();
+      expect(await confirmSignature("signature", vi.fn(async () => status as never), now, sleep, 1_000)).toEqual({
+        outcome: "unconfirmed", reason: "timeout",
+      });
+    }
+  });
+
   it("rejects contradictory and malformed confirmation metadata conservatively", async () => {
     const contradictory = [
       { ...confirmedSuccess, confirmations: 0 },
@@ -1404,6 +1451,22 @@ describe("confirmation authorization and abuse controls", () => {
     expect(getSignatureStatus).toHaveBeenCalledWith(
       expectedSignature(result.submittedBytes ?? new Uint8Array()),
     );
+    expect((await result.retry()).status).toBe(409);
+    expect(result.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a finalized string-form ledger failure and never resends", async () => {
+    const getSignatureStatus = vi.fn(async (_signature: string) => ({
+      slot: 123, confirmations: null, err: "AccountNotFound",
+      confirmationStatus: "finalized" as const,
+    }));
+    const result = await submitPreparedTransaction({ getSignatureStatus });
+    const signed = VersionedTransaction.deserialize(Buffer.from(result.signedBase64, "base64"));
+    const expected = bs58.encode(signed.signatures[0]!);
+    expect(result.response.status).toBe(502);
+    expect((await result.response.json()).error).toBe(`Transaction failed on Devnet (signature: ${expected})`);
+    expect(getSignatureStatus).toHaveBeenCalledWith(expected);
+    expect(result.submit).toHaveBeenCalledTimes(1);
     expect((await result.retry()).status).toBe(409);
     expect(result.submit).toHaveBeenCalledTimes(1);
   });

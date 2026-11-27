@@ -29,6 +29,9 @@ const MODIFIER = /\b(?:half|quarter|double|triple|twice|times|hundred|thousand|m
 const NEGATION = /\b(?:don'?t|do not|never|not|cancel|stop|except|instead)\b/i;
 // Hedged or deferred wording is not a request to send now; the model is not reliable at telling.
 const HEDGE = /\b(?:maybe|perhaps|might|later|tomorrow|eventually|hypothetically|just asking|what if)\b/i;
+// A condition, or a question about cost, is not an instruction either.
+const CONDITIONAL = /\b(?:if|unless|until|when|whenever|once|after|before|provided|assuming)\b/i;
+const INQUIRY = /\b(?:cost|costs|fee|fees|price|how much|how many|what would|should i|do i)\b/i;
 const OUT_OF_SCOPE = /\b(?:swap|exchange|convert|buy|sell|stake|unstake|mint|burn|approve|bridge|usdc|usdt|spl|token|tokens|nft)\b/i;
 
 // Model output is untrusted. Anything beyond the exact shape, including extra fields, is discarded.
@@ -80,6 +83,9 @@ export async function parseTransfer(message: string, llm?: LlmClient): Promise<P
   const rest = text.replace(ADDRESS_LIKE, " ");
   if (OUT_OF_SCOPE.test(rest)) return unsupported("Only SOL transfers are supported.");
   if (NEGATION.test(rest)) return clarify("Please state only the transfer you want, for example: send 0.5 SOL to <address>.");
+  if (CONDITIONAL.test(rest) || INQUIRY.test(rest)) {
+    return clarify("If you want to send now, write: send 0.5 SOL to <address>.");
+  }
   if (HEDGE.test(rest)) return clarify("If you want to send now, write: send 0.5 SOL to <address>.");
   if (addresses.length === 0) return clarify("Which wallet address should receive it? Paste the full address.");
   if (addresses.length > 1) return clarify("I found more than one address. Request one transfer at a time.");

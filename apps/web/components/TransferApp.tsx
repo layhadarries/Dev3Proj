@@ -7,6 +7,7 @@ import {
   type Card, type Review, type SubmissionOutcome,
 } from "../lib/client/flow";
 import { lamportsToSol } from "../lib/client/format";
+import { browserStorage, clearReceipt, loadReceipt, saveReceipt } from "../lib/client/receipts";
 import { findWallet, type WalletProvider } from "../lib/client/wallet";
 
 type Step =
@@ -44,6 +45,8 @@ export function TransferApp() {
   const [submission, setSubmission] = useState<Submission>();
   // Blocks another transfer until the last one has a known result or the user says they checked it.
   const unsettled = submission?.state === "sending" || submission?.state === "unknown";
+  // The wallet whose receipts may be shown.
+  const owner = useRef<string>(undefined);
 
   const reset = (note?: string) => {
     generation.current += 1;
@@ -56,6 +59,8 @@ export function TransferApp() {
   useEffect(() => {
     if (!wallet?.on) return;
     const changed = () => {
+      owner.current = undefined;
+      setSubmission(undefined);
       setAddress(undefined);
       reset("The wallet changed. Connect again.");
     };
@@ -102,11 +107,37 @@ export function TransferApp() {
       if (found.publicKey?.toString() !== signedIn) return setError("The wallet account changed. Connect again.");
       setWallet(found);
       setAddress(signedIn);
+      owner.current = signedIn;
+      const signature = loadReceipt(browserStorage(), signedIn);
+      setSubmission(
+        signature
+          ? { signature, state: "unknown", note: "This transfer had no confirmed result when you left. Check it before sending again." }
+          : undefined,
+      );
+    });
+  }
+
+  function signOut() {
+    void run("Signing out", () => api("session/logout", {}), () => {
+      owner.current = undefined;
+      setAddress(undefined);
+      setWallet(undefined);
+      // The stored receipt stays, and returns when this wallet signs in again.
+      setSubmission(undefined);
+      setAcknowledged(false);
+      setStep({ name: "ask" });
     });
   }
 
   function sign(review: Review) {
     let sent: string | undefined;
+    const signer = address!;
+    // A result is always stored, but shown only while its own wallet is the one in use.
+    const record = (next: Submission) => {
+      if (next.state === "sending" || next.state === "unknown") saveReceipt(browserStorage(), signer, next.signature);
+      else clearReceipt(browserStorage(), signer, next.signature);
+      if (owner.current === signer) setSubmission(next);
+    };
     void run(
       "Approve the transaction in your wallet",
       async (isCurrent) => {
@@ -115,17 +146,17 @@ export function TransferApp() {
             isCurrent,
             onSubmit: (signature) => {
               sent = signature;
-              setSubmission({ signature, state: "sending" });
+              record({ signature, state: "sending" });
             },
           });
           if (!sent || receiptSignature !== sent) {
             throw new Error("Confirmation could not be established: the submission receipt did not match the signed transaction.");
           }
-          setSubmission({ signature: sent, state: "confirmed" });
+          record({ signature: sent, state: "confirmed" });
         } catch (failure) {
           if (!sent) throw failure;
           const note = failure instanceof Error ? failure.message : undefined;
-          setSubmission({ signature: sent, state: submissionOutcome(failure), ...(note ? { note } : {}) });
+          record({ signature: sent, state: submissionOutcome(failure), ...(note ? { note } : {}) });
           if (failure instanceof ApiError && failure.status === 401) setAddress(undefined);
         }
       },
@@ -145,7 +176,12 @@ export function TransferApp() {
       <header>
         <h1>SolGuard</h1>
         <span className="badge">Solana Devnet only</span>
-        {address ? <code title={address}>{`${address.slice(0, 4)}…${address.slice(-4)}`}</code> : (
+        {address ? (
+          <span>
+            <code title={address}>{`${address.slice(0, 4)}…${address.slice(-4)}`}</code>{" "}
+            <button onClick={signOut} disabled={!!busy}>Sign out</button>
+          </span>
+        ) : (
           <button onClick={connect} disabled={!!busy}>Connect wallet</button>
         )}
       </header>
@@ -259,7 +295,7 @@ export function TransferApp() {
         <section aria-live="polite" className={submission.state === "confirmed" ? "PASS" : submission.state === "sending" ? "" : "WARN"}>
           <h2>{SUBMISSION_TITLE[submission.state]}</h2>
           {submission.note && submission.state !== "confirmed" && <p>{submission.note}</p>}
-          {submission.state !== "not_sent" && (
+          {(
             <p>
               <a href={`https://explorer.solana.com/tx/${encodeURIComponent(submission.signature)}?cluster=devnet`} target="_blank" rel="noreferrer">
                 View on Solana Explorer
@@ -267,7 +303,14 @@ export function TransferApp() {
             </p>
           )}
           {submission.state === "unknown" && (
-            <button onClick={() => setSubmission(undefined)}>I have checked Explorer</button>
+            <button
+              onClick={() => {
+                if (address) clearReceipt(browserStorage(), address, submission.signature);
+                setSubmission(undefined);
+              }}
+            >
+              I have checked Explorer
+            </button>
           )}
         </section>
       )}

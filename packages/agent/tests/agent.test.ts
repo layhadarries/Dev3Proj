@@ -91,6 +91,11 @@ describe("parser", () => {
     `send 5 USDC to ${bob}`,
     `don't send 1 SOL to ${bob}`,
     `maybe later I could send 1 SOL to ${bob}, just asking`,
+    `what would it cost to send 1 SOL to ${bob}`,
+    `if my invoice clears send 1 SOL to ${bob}`,
+    `once I am paid, send 1 SOL to ${bob}`,
+    `should I send 1 SOL to ${bob}`,
+    `what is the fee to send 1 SOL to ${bob}`,
     `what if I send 1 SOL to ${bob}`,
     `send 1 SOL to ${bob} tomorrow`,
     `send 1 SOL to ${bob} and ${mallory}`,
@@ -313,6 +318,21 @@ describe("model client", () => {
     });
     await expect(client.complete("s", "u")).rejects.toThrow();
     expect(redirect).toBe("error");
+  });
+  it("stops reading an oversized reply", async () => {
+    let pulled = 0;
+    let cancelled = false;
+    const endless = new ReadableStream<Uint8Array>({
+      pull: (controller) => { pulled += 1; controller.enqueue(new Uint8Array(8192)); },
+      cancel: () => { cancelled = true; },
+    });
+    const client = openAiCompatibleClient({
+      baseUrl: "https://example.invalid/v1", apiKey: "k", model: "m",
+      fetch: (async () => new Response(endless)) as typeof fetch,
+    });
+    await expect(client.complete("s", "u")).rejects.toThrow("too large");
+    expect(pulled).toBeLessThan(15);
+    expect(cancelled).toBe(true);
   });
   it("is disabled without full configuration", () => {
     expect(llmFromEnv({ LLM_MODEL: "m" })).toBeUndefined();
