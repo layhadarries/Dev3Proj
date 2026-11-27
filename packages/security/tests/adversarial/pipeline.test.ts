@@ -72,6 +72,35 @@ function setup(initial = 2n) {
     deps: { rpc, walletPublicKey: String(p), network: "devnet" as const },
   };
 }
+it("consumes handoffs and signed approvals only once under concurrent calls", async () => {
+  const { deps } = setup();
+  const report = await verify(intent, msg, deps);
+  const first = prepareWalletApproval(intent, msg, report, deps);
+  await expect(prepareWalletApproval(intent, msg, report, deps)).rejects.toThrow();
+  const wire = await first;
+  wire.set(ed25519.sign(msg, signer.secretKey.slice(0,32)), 1);
+  const results = await Promise.all([verifySigned(intent,wire,report,deps),verifySigned(intent,wire,report,deps)]);
+  expect(results.map(r=>r.verdict)).toEqual(["PASS","BLOCK"]);
+});
+it("invalidates approval if the wallet changes while freshness is being checked", async () => {
+  const { deps, rpc } = setup();
+  const report = await verify(intent,msg,deps);
+  rpc.fresh.mockImplementationOnce(async () => {
+    deps.walletPublicKey = String(r);
+    return { network:"devnet", commitment:"confirmed", blockhash:hash, slot:100n };
+  });
+  await expect(prepareWalletApproval(intent,msg,report,deps)).rejects.toThrow(/changed/);
+  deps.walletPublicKey = String(p);
+  await expect(prepareWalletApproval(intent,msg,report,deps)).rejects.toThrow();
+});
+it("blocks invalid signer limits and every truncated prefix before RPC", async () => {
+  const {deps,rpc} = setup();
+  for (let i = 0; i < msg.length; i++) {
+    expect((await verify(intent,msg.subarray(0,i),deps)).verdict).toBe("BLOCK");
+  }
+  expect((await verify(intent,msg,{...deps,config:{maxRequiredSignatures:NaN}})).verdict).toBe("BLOCK");
+  expect(rpc.identity).not.toHaveBeenCalled();
+});
 it("binds fee and simulation to identical bytes and verifies freshness after simulation", async () => {
   const { deps, rpc } = setup();
   expect((await verify(intent, msg, deps)).verdict).toBe("PASS");

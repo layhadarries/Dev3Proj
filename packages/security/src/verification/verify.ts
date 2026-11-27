@@ -44,6 +44,7 @@ interface Approval {
   phase: "verified" | "waiting" | "handed";
   slot: number;
   policy: string;
+  started: number;
 }
 const approvals = new WeakMap<object, Approval>();
 const confirmedSol = IntentSchema.extend({
@@ -86,7 +87,8 @@ function policyBinding(deps: VerifyDeps) {
 }
 function checkTime(a: Approval) {
   const elapsed = a.now() - a.report.generatedAt;
-  if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= APPROVAL_TTL_MS)
+  if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= APPROVAL_TTL_MS ||
+      performance.now() - a.started >= APPROVAL_TTL_MS)
     reject("TX_EXPIRED", "Verification expired; obtain a new verification.");
 }
 
@@ -147,6 +149,7 @@ export async function verify(
       ? Buffer.from(messageBytes)
       : Buffer.alloc(0);
   const time = (deps.now ?? Date.now)();
+  const started = performance.now();
   const report = blank(input, bytes, time);
   try {
     const message = decodeTransaction(bytes);
@@ -167,7 +170,8 @@ export async function verify(
     const spend = deps.maxSpendLamports ?? 0xffffffffffffffffn;
     const priority = deps.config?.maxPriorityFeeLamports ?? 100000n;
     const policy = policyBinding(deps);
-    if ((deps.config?.maxRequiredSignatures ?? 1) < 1)
+    const signatures = deps.config?.maxRequiredSignatures ?? 1;
+    if (!Number.isSafeInteger(signatures) || signatures < 1)
       reject("EXTRA_SIGNER", "Policy does not permit a signature.");
     if ([limit, spend, priority].some((v) => typeof v !== "bigint" || v < 0n))
       reject("INTERNAL_ERROR", "Invalid trusted policy limits.");
@@ -271,8 +275,9 @@ export async function verify(
       phase: "verified",
       slot,
       policy,
+      started,
     };
-    checkTime(approval);
+    checkBinding(approval, input, bytes, deps);
     approvals.set(report, approval);
     return report;
   } catch (e) {
@@ -322,6 +327,8 @@ export async function prepareWalletApproval(
     return reject("TX_MODIFIED", "No unused local verification.");
   a.phase = "waiting";
   try {
+    if (!(message instanceof Uint8Array) || message.length > 1167)
+      reject("TX_MODIFIED", "Invalid message at wallet handoff.");
     const bytes = Buffer.from(message);
     checkBinding(a, intent, bytes, deps);
     if (a.report.verdict === "WARN" && acknowledgedWarning !== true)
@@ -330,6 +337,7 @@ export async function prepareWalletApproval(
         "Explicit user acknowledgement required.",
       );
     await refresh(a, bytes);
+    checkBinding(a, intent, bytes, deps);
     a.phase = "handed";
     return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), bytes]);
   } catch (e) {
@@ -370,6 +378,7 @@ export async function verifySigned(
     )
       reject("TX_MODIFIED", "Required payer signature absent or invalid.");
     await refresh(a, bytes);
+    checkBinding(a, intent, bytes, deps);
     return structuredClone(a.report);
   } catch (e) {
     return blocked(report, e);
