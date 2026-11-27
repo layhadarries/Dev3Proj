@@ -1,6 +1,10 @@
 import { Keypair, Message, SystemInstruction, Transaction } from "@solana/web3.js";
-import { hashMessage, verify } from "@solguard/security";
-import { parseIntent, serializeIntent, type SecurityReportWire } from "@solguard/shared";
+import {
+  parseConfirmedSolIntent, prepareWalletApproval, verify, type RpcClient,
+} from "@solguard/security";
+import {
+  parseIntent, serializeIntent, serializeReport, type Intent, type SecurityReportWire,
+} from "@solguard/shared";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -123,16 +127,75 @@ describe("builder", () => {
       expect(() => confirmIntent({ recipient: bob, amountBaseUnits: bad }, alice)).toThrow();
     }
   });
-  it("hands the security engine bytes it hashes identically, and its stub still blocks", async () => {
-    const built = await buildTransfer(intent, rpc);
-    const bytes = Buffer.from(built.messageBase64, "base64");
-    expect(hashMessage(bytes)).toBe(built.messageHash);
-    const report = await verify(intent, bytes, { rpc: {} });
-    expect(report.messageHash).toBe(built.messageHash);
-    expect(report.verdict).toBe("BLOCK");
-  });
   it("propagates RPC failure", async () => {
     await expect(buildTransfer(intent, { getLatestBlockhash: async () => { throw new Error("rpc"); } })).rejects.toThrow("rpc");
+  });
+});
+
+describe("security pipeline", () => {
+  const blockhash = Keypair.generate().publicKey.toBase58();
+  const blocks = { getLatestBlockhash: async () => ({ blockhash, lastValidBlockHeight: 100 }) };
+  const confirmed = () => confirmIntent({ recipient: bob, amountBaseUnits: "500000000" }, alice);
+
+  /** Stands in for Devnet: simulates exactly the confirmed balance changes. */
+  function chain(intent: Intent, recipientBalance = 1_000_000n): RpcClient {
+    const context = { slot: 100 };
+    const fee = 5000n;
+    const pre = [1_000_000_000n, recipientBalance, 1n];
+    const post = [pre[0]! - intent.amountBaseUnits - fee, pre[1]! + intent.amountBaseUnits, 1n];
+    return {
+      identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
+      fresh: async () => ({ network: "devnet", commitment: "confirmed", blockhash, slot: 100n }),
+      fee: async () => ({ context, value: fee }),
+      simulate: async () => ({
+        context,
+        value: {
+          err: null, fee, preBalances: pre, postBalances: post,
+          accounts: post.slice(0, 2).map((lamports) => ({
+            owner: "11111111111111111111111111111111" as const,
+            executable: false as const, lamports, data: ["", "base64"] as ["", "base64"],
+          })),
+          innerInstructions: [], preTokenBalances: [], postTokenBalances: [],
+          replacementBlockhash: null, logs: [], unitsConsumed: 150,
+        },
+      }),
+    };
+  }
+  async function run(intent: Intent, builtFrom: Intent, recipientBalance?: bigint) {
+    const built = await buildTransfer(builtFrom, blocks);
+    const message = Buffer.from(built.messageBase64, "base64");
+    const deps = { rpc: chain(intent, recipientBalance), network: "devnet" as const, walletPublicKey: intent.payer };
+    return { built, message, deps, report: await verify(intent, message, deps) };
+  }
+
+  it("passes a built transfer, explains it and releases it for signing once", async () => {
+    const intent = confirmed();
+    const { built, message, deps, report } = await run(intent, intent);
+    expect(report.verdict).toBe("PASS");
+    expect(report.messageHash).toBe(built.messageHash);
+    expect(explainReport(serializeReport(report))).toMatchObject({ verdict: "PASS", feeSol: "0.000005" });
+    const wire = await prepareWalletApproval(intent, message, report, deps);
+    expect(wire.subarray(65)).toEqual(message);
+    await expect(prepareWalletApproval(intent, message, report, deps)).rejects.toThrow();
+  });
+  it("warns about a new recipient", async () => {
+    const intent = confirmed();
+    const { report } = await run(intent, intent, 0n);
+    expect(explainReport(serializeReport(report)).verdict).toBe("WARN");
+  });
+  it.each([
+    ["AMOUNT_MISMATCH", { amountBaseUnits: 500_000_001n }],
+    ["RECIPIENT_MISMATCH", { recipient: mallory }],
+  ])("blocks a transaction built differently from the confirmation: %s", async (rule, change) => {
+    const intent = confirmed();
+    const { report } = await run(intent, { ...intent, ...change });
+    const result = explainReport(serializeReport(report));
+    expect(result.verdict).toBe("BLOCK");
+    expect(result.points[0]?.ruleId).toBe(rule);
+  });
+  it("produces intents the security boundary accepts", () => {
+    const intent = confirmed();
+    expect(parseConfirmedSolIntent(serializeIntent(intent))).toEqual(intent);
   });
 });
 

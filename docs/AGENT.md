@@ -8,9 +8,10 @@ Contracts: `packages/shared` (decimal strings on the wire, `bigint` in code via 
 1. UI calls `parse` with `{ message }` and gets `ready` (with `draft`), `needs_clarification` or `unsupported`.
 2. UI shows the full recipient and amount from the draft. The user confirms.
 3. UI calls `build` with `{ draft, payer, confirmed: true }` and gets `{ intent, transaction }`.
-4. Security: `verify(parseIntent(intent), messageBytes, deps)`.
+4. Same server process: `verify(parseConfirmedSolIntent(intent), messageBytes, deps)`.
 5. UI calls `explain` with the report in wire form (`serializeReport(report)`).
-6. Wallet: `new VersionedTransaction(VersionedMessage.deserialize(messageBytes))`.
+6. Wallet handoff and signed check: follow `SECURITY_API.md` (`prepareWalletApproval`, sign only,
+   then `verifySigned`). Never pass the builder's bytes straight to the wallet.
 
 ## Next.js route
 
@@ -31,13 +32,15 @@ export const POST = agentHandlers({
 
 ## Proposed changes to `packages/shared`
 
-Not applied; the agent enforces the first three itself for now.
+Agreed by Taz on 27 November, not yet applied; the agent enforces the first three itself for now.
+Zod also needs upgrading to 4.6.6 or later (high-severity advisory; CI audits at that level).
 
 - Add `BuiltTransaction` (see `packages/agent/src/builder.ts`).
 - Bound intent amounts to u64 and reject `payer === recipient`.
 - Reject reports whose verdict or severities contradict the findings, or that pass without a simulation.
 - Open point: `build` creates the intent from the client's `confirmed: true`. Per
-  `SECURITY_ARCHITECTURE.md`, the signing gate still needs a trusted, single-use confirmation record.
+  `SECURITY_ARCHITECTURE.md`, the signing gate still needs a trusted, single-use confirmation record
+  (Taz owns this).
 
 ## Running the model
 
@@ -59,5 +62,5 @@ Simple commands never reach it. Explanations are fixed text per rule ID, not mod
 ## Notes for integration
 
 - `explain` words a report; it does not authenticate it. Gate signing on the engine's own output.
-- Wallets may add priority-fee instructions when signing; `verifySigned` should account for this.
+- `verifySigned` rejects a message the wallet changed, including added priority-fee instructions.
 - A transfer that leaves a new account below the rent-exempt minimum fails simulation.

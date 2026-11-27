@@ -174,34 +174,34 @@ describe("Stage 0: aggregateVerdict truth table", () => {
   });
 });
 
-describe("Stage 0: verify() and verifySigned() stubs", () => {
-  it("verify() fails closed with BLOCK INTERNAL_ERROR and valid schema", async () => {
+describe("Verifier failure contracts", () => {
+  it("verify() blocks malformed messages with a valid schema", async () => {
     const intent = parseIntent(makeValidWireIntent());
     const msg = new Uint8Array([10, 20, 30]);
     const report = await verify(intent, msg, {
-      rpc: {},
+      walletPublicKey: intent.payer, network:"devnet",
       now: () => 1764184960000,
     });
 
     expect(report.verdict).toBe("BLOCK");
-    expect(report.findings[0]?.ruleId).toBe("INTERNAL_ERROR");
+    expect(report.findings[0]?.ruleId).toBe("UNDECODABLE_MESSAGE");
     expect(report.messageHash).toBe(hashMessage(msg));
     expect(report.generatedAt).toBe(1764184960000);
     expect(() => SecurityReportSchema.parse(report)).not.toThrow();
   });
 
-  it("verifySigned() fails closed with BLOCK INTERNAL_ERROR", async () => {
+  it("verifySigned() blocks an unissued handoff", async () => {
     const intent = parseIntent(makeValidWireIntent());
     const txBytes = new Uint8Array([1, 2, 3]);
     const report = await verifySigned(
       intent,
       txBytes,
       { messageHash: hashMessage(txBytes) },
-      { rpc: {}, now: () => 1764184960000 }
+      { walletPublicKey: intent.payer, network:"devnet", now: () => 1764184960000 }
     );
 
     expect(report.verdict).toBe("BLOCK");
-    expect(report.findings[0]?.ruleId).toBe("INTERNAL_ERROR");
+    expect(report.findings[0]?.ruleId).toBe("TX_MODIFIED");
   });
 
   it("exposes expected default config", () => {

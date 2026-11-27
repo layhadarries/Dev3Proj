@@ -1,6 +1,3 @@
-/**
- * Minimal RPC client interface placeholder for Stage 0.
- * Full methods and Web3RpcClient/FixtureRpcClient implementations are added in Stage 1.
- */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface RpcClient {}
+import type { createDevnetRpc } from "./devnet.js";
+/** Trusted server dependency. Never accept a client or RPC evidence from a proposal. */
+export type RpcClient = ReturnType<typeof createDevnetRpc>;
