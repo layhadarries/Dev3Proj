@@ -23,12 +23,15 @@ The card expires 60 seconds after `stage`. `confirm` starts a new 60-second wind
 ```ts
 // lib/gateway.ts: one instance per server process. Keep it on globalThis, because `next dev`
 // can evaluate the module again while compiling a route, which loses pending confirmations.
+import { createConfirmationGateway } from "@solguard/security";
+
 const shared = globalThis as typeof globalThis & { solguardGateway?: ReturnType<typeof createConfirmationGateway> };
 export const gateway = (shared.solguardGateway ??= createConfirmationGateway());
 
 // app/api/build/route.ts
 import { agentHandlers, llmFromEnv } from "@solguard/agent";
 import { getRecentBlockhash } from "@solguard/security";
+import { gateway } from "../../../lib/gateway";
 
 export const POST = agentHandlers({
   rpc: {

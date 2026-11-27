@@ -3,7 +3,7 @@ import { lamportsToSol } from "./amount.js";
 
 /** Each rule's expected severity and wording. The compiler requires every shared rule to be listed. */
 const RULES: Record<RuleId, readonly [Severity, string]> = {
-  AMOUNT_MISMATCH: ["BLOCK", "The amount differs from the one you confirmed."],
+  AMOUNT_MISMATCH: ["BLOCK", "The amount differs from the one you confirmed, or the total with fees is above your spending limit."],
   RECIPIENT_MISMATCH: ["BLOCK", "The recipient differs from the one you confirmed."],
   PAYER_MISMATCH: ["BLOCK", "The transaction spends from, or is paid by, an unexpected account."],
   ASSET_MISMATCH: ["BLOCK", "The asset differs from the one you confirmed."],
@@ -18,7 +18,7 @@ const RULES: Record<RuleId, readonly [Severity, string]> = {
   LOOKUP_TABLE_UNRESOLVED: ["BLOCK", "Some accounts in the transaction could not be identified."],
   EXTRA_SIGNER: ["BLOCK", "The transaction asks for more signers than allowed."],
   DURABLE_NONCE_USED: ["BLOCK", "The transaction is built so it would not expire normally."],
-  EXCESSIVE_PRIORITY_FEE: ["BLOCK", "The priority fee is above the allowed limit."],
+  EXCESSIVE_PRIORITY_FEE: ["BLOCK", "The network fee or priority fee is above the allowed limit."],
   SIM_FAILED: ["BLOCK", "The test run of this transaction failed."],
   RPC_UNAVAILABLE: ["BLOCK", "The Solana network could not be reached, so verification did not finish."],
   RPC_INCONSISTENT: ["BLOCK", "The network gave conflicting answers, so verification did not finish."],
