@@ -7,8 +7,8 @@ import {
 } from "@solguard/shared";
 import { createConfirmationGateway, createDevnetRpc, getRecentBlockhash } from "@solguard/security";
 import { agentHandlers, explainReport, llmFromEnv, parseTransfer } from "@solguard/agent";
-import { clientAddress, errorResponse, HttpError, jsonResponse, RateLimiter, readJson, requireSameOrigin } from "./http.js";
-import { SessionStore } from "./sessions.js";
+import { clientAddress, errorResponse, HttpError, jsonResponse, RateLimiter, readJson, requireSameOrigin } from "./http";
+import { SessionStore } from "./sessions";
 
 const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com";
 const DEVNET_CONNECTION = new Connection(SOLANA_DEVNET_RPC, "confirmed");

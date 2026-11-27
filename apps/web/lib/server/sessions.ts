@@ -1,7 +1,7 @@
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { PublicKey } from "@solana/web3.js";
 import { Base58PubkeySchema } from "@solguard/shared";
-import { HttpError } from "./http.js";
+import { HttpError } from "./http";
 
 const SESSION_TTL_MS = 60 * 60 * 1000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;

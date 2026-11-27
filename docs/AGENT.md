@@ -56,8 +56,12 @@ Export one handler per route file (`.parse`, `.build`, `.explain`). The app's `t
 gateway must run in the same Node process. Tested with Next.js 15.5.29 in `next dev` and
 `next start`, from `stage` to `handoff`, with a fixed test session (no real authentication or CSRF).
 
-The handlers cap request bodies at 32 KiB and require a JSON content type. Authentication, CSRF
-protection and rate limiting are the app's job.
+The web routes cap streamed request bodies at 32 KiB, validate strict request
+shapes, verify wallet challenge signatures and bind opaque HttpOnly sessions
+to the wallet. They require same-origin `Origin` metadata (and reject
+cross-site Fetch Metadata) rather than a custom CSRF header, apply per-address,
+per-session and process-wide public-auth rate limits, and pin submission to the
+Devnet endpoint. See the [web API contract](SECURITY_API.md#web-api-routes).
 
 ## Running the model
 

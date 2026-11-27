@@ -49,6 +49,43 @@ need session affinity. Rate-limit staging per principal; the process cap is not
 a per-user quota. The gateway cannot enforce a user gesture by itself or
 prevent a wallet from submitting outside this service.
 
+## Web API routes
+
+`apps/web/app/api/[...path]/route.ts` exposes the UI's POST contract. Every
+route requires `application/json`, an exact `Origin` match and, when supplied,
+`Sec-Fetch-Site: same-origin`; the UI does not need a custom CSRF header.
+Production must set `APP_ORIGIN` to the canonical HTTPS origin (without a path
+or trailing slash). Configure the ingress proxy to overwrite
+`X-Forwarded-For`/`X-Real-IP`; these headers are used only for the additional
+per-address rate limit. A process-wide public-auth limit and per-session limits
+also apply.
+
+| Route | Request | Response |
+| --- | --- | --- |
+| `POST /api/session/challenge` | `{ wallet }` | `{ message }` |
+| `POST /api/session` | `{ wallet, signature }` | `{ wallet }`, sets an HttpOnly, SameSite=Strict cookie |
+| `POST /api/parse` | `{ message }` | agent parse result |
+| `POST /api/stage` | `{ recipient, amountBaseUnits }` | server-owned confirmation card |
+| `POST /api/confirm` | `{ id }` | `{ intent }` |
+| `POST /api/build` | `{ confirmationId }` | `{ transaction, report }` |
+| `POST /api/explain` | the report object (not `{ report }`) | deterministic explanation |
+| `POST /api/acknowledge` | `{ id }` | `{ ok: true }` |
+| `POST /api/handoff` | `{ id }` | `{ wire }` (base64 unsigned transaction) |
+| `POST /api/submit` | `{ id, signed }` | `{ signature }` |
+
+Challenges bind the wallet, origin, timestamp and a random nonce; their
+Ed25519 signatures are verified server-side and are single-use. The opaque
+session token is held in an in-memory server-side session and bound to that
+wallet and Devnet. Bodies are streamed with a 32 KiB cap and strict field
+validation. All public errors use `{ error }` without internal RPC details.
+Sessions and gateway records are process-local; use one Node process or
+session-affine routing, and expect a restart to invalidate pending sessions.
+
+The web submit transport is pinned to `https://api.devnet.solana.com`. It
+forwards only the exact signed bytes after `submitAndConfirm` verifies the
+signature and transaction. Do not configure this demo for mainnet or use
+funded wallets.
+
 ## Low-level verification (diagnostics and standalone demo)
 
 These primitives are not a substitute for the gateway in application routes:

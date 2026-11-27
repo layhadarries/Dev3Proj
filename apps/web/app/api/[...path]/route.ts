@@ -1,4 +1,4 @@
-import { applicationHandlers } from "../../../lib/server/application.js";
+import { applicationHandlers } from "../../../lib/server/application";
 
 export const runtime = "nodejs";
 
