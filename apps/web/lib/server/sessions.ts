@@ -59,7 +59,7 @@ export class SessionStore {
     return message;
   }
 
-  authenticate(wallet: string, signatureBase64: string, origin: string): { cookie: string; session: AuthenticatedSession } {
+  authenticate(wallet: string, signatureBase64: string, origin: string, request?: Request): { cookie: string; session: AuthenticatedSession } {
     if (!Base58PubkeySchema.safeParse(wallet).success) throw new HttpError(400, "Invalid wallet address");
     const signature = Buffer.from(signatureBase64, "base64");
     if (
@@ -84,10 +84,16 @@ export class SessionStore {
       matched = undefined;
     }
     if (!matched) throw new HttpError(401, "Wallet signature is invalid or expired");
-    if (this.sessions.size >= MAX_RECORDS) throw new HttpError(503, "Sessions are temporarily unavailable");
+    const previousToken = request ? this.readCookie(request.headers.get("cookie") ?? "") : undefined;
+    const replaced = [...this.sessions.entries()].filter(([token, session]) =>
+      session.walletPublicKey === wallet || token === previousToken);
+    if (this.sessions.size - replaced.length >= MAX_RECORDS) {
+      throw new HttpError(503, "Sessions are temporarily unavailable");
+    }
     for (const [message, challenge] of this.challenges) {
       if (challenge.wallet === wallet) this.challenges.delete(message);
     }
+    for (const [token] of replaced) this.sessions.delete(token);
 
     const cookie = randomBytes(32).toString("base64url");
     const session = {
@@ -116,6 +122,15 @@ export class SessionStore {
 
   cookieHeader(token: string): string {
     return `${this.cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1000}${this.secureCookies ? "; Secure" : ""}`;
+  }
+
+  expiredCookieHeader(): string {
+    return `${this.cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${this.secureCookies ? "; Secure" : ""}`;
+  }
+
+  revoke(request: Request): void {
+    const token = this.readCookie(request.headers.get("cookie") ?? "");
+    if (token) this.sessions.delete(token);
   }
 
   private readCookie(header: string): string | undefined {

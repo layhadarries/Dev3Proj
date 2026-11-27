@@ -1,6 +1,6 @@
 import { createPrivateKey, randomUUID, sign } from "node:crypto";
 import { Keypair, VersionedTransaction } from "@solana/web3.js";
-import { createConfirmationGateway, type RpcClient } from "@solguard/security";
+import type { RpcClient } from "@solguard/security";
 import { describe, expect, it, vi } from "vitest";
 import { createApplicationHandlers, type ApplicationDependencies } from "../lib/server/application";
 import { RateLimiter } from "../lib/server/http";
@@ -33,10 +33,38 @@ function signatureFor(wallet: Keypair, message: string): string {
   return sign(null, Buffer.from(message, "utf8"), key).toString("base64");
 }
 
+function verificationRpc(): RpcClient {
+  const context = { slot: 100 };
+  const simulation = {
+    err: null,
+    fee: 5_000n,
+    preBalances: [10_000n, 2n, 1n],
+    postBalances: [4_992n, 10n, 1n],
+    accounts: [4_992n, 10n].map((lamports) => ({
+      owner: "11111111111111111111111111111111" as const,
+      executable: false as const,
+      lamports,
+      data: ["", "base64"] as ["", "base64"],
+    })),
+    innerInstructions: [],
+    preTokenBalances: [],
+    postTokenBalances: [],
+    replacementBlockhash: null,
+    logs: ["mock simulation"],
+    unitsConsumed: 150,
+  };
+  return {
+    identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
+    fresh: async (hash) => ({ network: "devnet", commitment: "confirmed", blockhash: hash, slot: 100n }),
+    fee: async () => ({ context, value: 5_000n }),
+    simulate: async () => ({ context, value: simulation }),
+  };
+}
+
 async function signIn(
   handlers: ReturnType<typeof createApplicationHandlers>,
   wallet = Keypair.generate(),
-  options: { origin?: string } = {},
+  options: { origin?: string; cookie?: string } = {},
 ) {
   const challengeResponse = await handlers.challenge(request("session/challenge", { wallet: wallet.publicKey.toBase58() }, options));
   const { message } = await challengeResponse.json();
@@ -48,7 +76,7 @@ async function signIn(
 }
 
 function handlers(options: ApplicationDependencies = {}) {
-  return createApplicationHandlers({ allowedOrigin: origin, gateway: createConfirmationGateway(), ...options });
+  return createApplicationHandlers({ allowedOrigin: origin, maxSpendLamports: 10_000_000_000n, ...options });
 }
 
 describe("wallet challenge authentication", () => {
@@ -108,6 +136,28 @@ describe("wallet challenge authentication", () => {
     }, { origin: otherOrigin }));
     expect(response.status).toBe(401);
   });
+
+  it("revokes the previous same-wallet session when a new one is issued", async () => {
+    const app = handlers();
+    const previous = await signIn(app);
+    const rotated = await signIn(app, previous.wallet, { cookie: previous.cookie });
+    const draft = { recipient: Keypair.generate().publicKey.toBase58(), amountBaseUnits: "1" };
+    expect((await app.stage(request("stage", draft, { cookie: previous.cookie }))).status).toBe(401);
+    expect((await app.stage(request("stage", draft, { cookie: rotated.cookie }))).status).toBe(200);
+  });
+
+  it("revokes the current server session and expires its cookie on logout", async () => {
+    const app = handlers();
+    const { cookie } = await signIn(app);
+    const response = await app.logout(request("session/logout", {}, { cookie }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect((await app.stage(request("stage", {
+      recipient: Keypair.generate().publicKey.toBase58(),
+      amountBaseUnits: "1",
+    }, { cookie }))).status).toBe(401);
+  });
 });
 
 describe("request boundaries", () => {
@@ -152,6 +202,22 @@ describe("request boundaries", () => {
     expect((await app.stage(request("stage", draft, { cookie: "solguard_session=not-a-token" }))).status).toBe(401);
     now += 60 * 60 * 1000;
     expect((await app.stage(request("stage", draft, { cookie }))).status).toBe(401);
+  });
+
+  it("disables build when no application spend limit is configured", async () => {
+    const app = createApplicationHandlers({ allowedOrigin: origin });
+    const { cookie } = await signIn(app);
+    const staged = await app.stage(request("stage", {
+      recipient: Keypair.generate().publicKey.toBase58(),
+      amountBaseUnits: "1",
+    }, { cookie }));
+    const { id } = await staged.json();
+    expect((await app.confirm(request("confirm", { id }, { cookie }))).status).toBe(200);
+    const response = await app.build(request("build", { confirmationId: id }, { cookie }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "Transaction building is disabled until a server spending limit is configured",
+    });
   });
 });
 
@@ -232,39 +298,15 @@ describe("confirmation authorization and abuse controls", () => {
     const owner = Keypair.generate();
     const recipient = Keypair.generate().publicKey;
     const blockhash = Keypair.generate().publicKey.toBase58();
-    const context = { slot: 100 };
-    const simulation = {
-      err: null,
-      fee: 5_000n,
-      preBalances: [10_000n, 2n, 1n],
-      postBalances: [4_992n, 10n, 1n],
-      accounts: [4_992n, 10n].map((lamports) => ({
-        owner: "11111111111111111111111111111111" as const,
-        executable: false as const,
-        lamports,
-        data: ["", "base64"] as ["", "base64"],
-      })),
-      innerInstructions: [],
-      preTokenBalances: [],
-      postTokenBalances: [],
-      replacementBlockhash: null,
-      logs: ["mock simulation"],
-      unitsConsumed: 150,
-    };
-    const rpc: RpcClient = {
-      identity: async () => ({ network: "devnet", genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" }),
-      fresh: async (hash) => ({ network: "devnet", commitment: "confirmed", blockhash: hash, slot: 100n }),
-      fee: async () => ({ context, value: 5_000n }),
-      simulate: async () => ({ context, value: simulation }),
-    };
     let signedSnapshot = Buffer.alloc(0);
     const submit = vi.fn(async (bytes: Uint8Array) => {
       signedSnapshot = Buffer.from(bytes);
       return "mock-devnet-signature";
     });
     const app = handlers({
-      gateway: createConfirmationGateway({ rpc }),
+      rpc: verificationRpc(),
       blockhash: async () => ({ blockhash, lastValidBlockHeight: 123 }),
+      maxSpendLamports: 5_008n,
       submit,
     });
     const { cookie } = await signIn(app, owner);
@@ -295,5 +337,29 @@ describe("confirmation authorization and abuse controls", () => {
     expect(await submitted.json()).toEqual({ signature: "mock-devnet-signature" });
     expect(signedSnapshot.toString("base64")).toBe(signedBase64);
     expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("enforces the configured total-debit cap through stage, build and inspect", async () => {
+    const wallet = Keypair.generate();
+    const recipient = Keypair.generate().publicKey;
+    const blockhash = Keypair.generate().publicKey.toBase58();
+    const app = handlers({
+      rpc: verificationRpc(),
+      blockhash: async () => ({ blockhash, lastValidBlockHeight: 123 }),
+      maxSpendLamports: 5_007n,
+    });
+    const { cookie } = await signIn(app, wallet);
+    const staged = await app.stage(request("stage", {
+      recipient: recipient.toBase58(),
+      amountBaseUnits: "8",
+    }, { cookie }));
+    const { id } = await staged.json();
+    expect((await app.confirm(request("confirm", { id }, { cookie }))).status).toBe(200);
+    const built = await app.build(request("build", { confirmationId: id }, { cookie }));
+    expect(built.status).toBe(200);
+    const { report } = await built.json();
+    expect(report.verdict).toBe("BLOCK");
+    expect(report.findings.map((finding: { ruleId: string }) => finding.ruleId)).toContain("AMOUNT_MISMATCH");
+    expect((await app.handoff(request("handoff", { id }, { cookie }))).status).toBe(409);
   });
 });

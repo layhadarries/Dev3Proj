@@ -8,6 +8,7 @@ export async function POST(request: Request, context: { params: Promise<{ path: 
   const handler = {
     "session/challenge": applicationHandlers.challenge,
     session: applicationHandlers.signIn,
+    "session/logout": applicationHandlers.logout,
     parse: applicationHandlers.parse,
     stage: applicationHandlers.stage,
     confirm: applicationHandlers.confirm,

@@ -5,13 +5,14 @@ import {
   SecurityReportWireSchema,
   serializeIntent,
 } from "@solguard/shared";
-import { createConfirmationGateway, createDevnetRpc, getRecentBlockhash } from "@solguard/security";
+import { createConfirmationGateway, createDevnetRpc, getRecentBlockhash, type RpcClient } from "@solguard/security";
 import { agentHandlers, explainReport, llmFromEnv, parseTransfer } from "@solguard/agent";
 import { clientAddress, errorResponse, HttpError, jsonResponse, RateLimiter, readJson, requireSameOrigin } from "./http";
 import { SessionStore } from "./sessions";
 
 const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com";
 const DEVNET_CONNECTION = new Connection(SOLANA_DEVNET_RPC, "confirmed");
+const MAX_SPEND_U64 = 0xffffffffffffffffn;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function objectInput(input: unknown, keys: string[]): Record<string, unknown> {
@@ -25,6 +26,11 @@ function walletInput(input: unknown): { wallet: string } {
   const record = objectInput(input, ["wallet"]);
   if (typeof record.wallet !== "string" || !Base58PubkeySchema.safeParse(record.wallet).success) throw new Error("INVALID_INPUT");
   return { wallet: record.wallet };
+}
+
+function emptyInput(input: unknown): Record<string, never> {
+  objectInput(input, []);
+  return {};
 }
 
 function signInInput(input: unknown): { wallet: string; signature: string } {
@@ -84,11 +90,32 @@ export interface ApplicationDependencies {
   allowedOrigin?: string;
   sessions?: SessionStore;
   gateway?: ReturnType<typeof createConfirmationGateway>;
+  rpc?: RpcClient;
+  maxSpendLamports?: bigint;
   rateLimiter?: RateLimiter;
   now?: () => number;
   llm?: ReturnType<typeof llmFromEnv>;
   blockhash?: () => Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   submit?: (signedBytes: Uint8Array) => Promise<string>;
+}
+
+function configuredSpendLimit(explicit?: bigint): bigint | undefined {
+  if (explicit !== undefined) {
+    if (explicit < 0n || explicit > MAX_SPEND_U64) {
+      throw new Error("maxSpendLamports must be a non-negative u64 value");
+    }
+    return explicit;
+  }
+  const raw = process.env.SOLGUARD_MAX_SPEND_LAMPORTS;
+  if (raw === undefined) return undefined;
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+    throw new Error("SOLGUARD_MAX_SPEND_LAMPORTS must be a decimal u64 value");
+  }
+  const limit = BigInt(raw);
+  if (limit > MAX_SPEND_U64) {
+    throw new Error("SOLGUARD_MAX_SPEND_LAMPORTS must be a decimal u64 value");
+  }
+  return limit;
 }
 
 function routeError(error: unknown): Response {
@@ -105,7 +132,12 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
   const now = dependencies.now ?? Date.now;
   const sessions = dependencies.sessions ?? new SessionStore(now);
   const limiter = dependencies.rateLimiter ?? new RateLimiter(now);
-  const gateway = dependencies.gateway ?? createConfirmationGateway({ rpc: createDevnetRpc() });
+  const spendLimit = configuredSpendLimit(dependencies.maxSpendLamports);
+  const securityRpc = dependencies.rpc ?? createDevnetRpc();
+  const gateway = dependencies.gateway ?? createConfirmationGateway({
+    rpc: securityRpc,
+    maxSpendLamports: spendLimit ?? 0n,
+  });
   const blockhash = dependencies.blockhash ?? (async () => {
     const recent = await getRecentBlockhash();
     const lastValidBlockHeight = Number(recent.lastValidBlockHeight);
@@ -138,7 +170,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
     route: string,
     parse: (input: unknown) => T,
     options: { public?: boolean; ipLimit?: number; sessionLimit?: number; globalLimit?: number } = {},
-    run: (input: T, session: ReturnType<SessionStore["resolve"]> | undefined, origin: string) => Promise<unknown> | unknown,
+    run: (input: T, session: ReturnType<SessionStore["resolve"]> | undefined, origin: string, request: Request) => Promise<unknown> | unknown,
   ): Promise<Response> {
     try {
       if (request.method !== "POST") throw new HttpError(405, "Method not allowed");
@@ -161,7 +193,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
         if (publicLimit !== undefined) throw new HttpError(429, "Too many requests", publicLimit);
       }
 
-      const result = await run(input, session, origin);
+      const result = await run(input, session, origin, request);
       return result instanceof Response ? result : jsonResponse(result);
     } catch (error) {
       return routeError(error);
@@ -181,14 +213,27 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
       })),
 
     signIn: (request: Request) =>
-      invoke(request, "session", signInInput, publicOptions, (input, _session, origin) => {
-        const authenticated = sessions.authenticate(input.wallet, input.signature, origin);
+      invoke(request, "session", signInInput, publicOptions, (input, _session, origin, currentRequest) => {
+        const authenticated = sessions.authenticate(input.wallet, input.signature, origin, currentRequest);
         return new Response(JSON.stringify({ wallet: authenticated.session.walletPublicKey }), {
           status: 200,
           headers: {
             "content-type": "application/json",
             "cache-control": "no-store",
             "set-cookie": sessions.cookieHeader(authenticated.cookie),
+          },
+        });
+      }),
+
+    logout: (request: Request) =>
+      invoke(request, "session/logout", emptyInput, publicOptions, (_input, _session, _origin, currentRequest) => {
+        sessions.revoke(currentRequest);
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+            "set-cookie": sessions.expiredCookieHeader(),
           },
         });
       }),
@@ -217,6 +262,9 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
     build: (request: Request) => {
       const { route, options } = protectedRoute("build", 8);
       return invoke(request, route, buildInput, options, async (input) => {
+        if (spendLimit === undefined) {
+          throw new HttpError(503, "Transaction building is disabled until a server spending limit is configured");
+        }
         const forwarded = new Request(request.url, {
           method: "POST",
           headers: { "content-type": "application/json", cookie: request.headers.get("cookie") ?? "" },
