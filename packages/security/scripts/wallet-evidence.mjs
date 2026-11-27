@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import console from "node:console";
 import process from "node:process";
-import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import {
   getRecentBlockhash,
   getWalletBalance,
@@ -13,7 +13,10 @@ import {
   verifySigned,
 } from "../dist/index.js";
 
-const payer = new PublicKey(process.argv[2]);
+const newDemo = process.argv[2] === "--new-demo-wallet";
+const payer = newDemo
+  ? Keypair.generate().publicKey
+  : new PublicKey(process.argv[2] ?? process.env.SOLGUARD_TEST_PAYER);
 const amount = 10_000_000n;
 const endpoint = "https://api.devnet.solana.com";
 const allowed = new Set([
@@ -61,23 +64,22 @@ function publicAddressOnly() {
 }
 try {
   evidence.before = await getWalletBalance(String(payer));
-  assert.ok(
-    evidence.before.lamports > amount,
-    "Balance insufficient for transfer plus fee",
-  );
+  if (newDemo) assert.equal(evidence.before.lamports, 0n);
+  else assert.ok(evidence.before.lamports > amount, "Balance insufficient for transfer plus fee");
   phase = "recipient";
   const recipient = publicAddressOnly();
   evidence.recipient = String(recipient);
   evidence.recipientBefore = await inspectAccount(String(recipient));
   assert.equal(evidence.recipientBefore.account, null);
   const deps = { network: "devnet", walletPublicKey: String(payer) };
-  for (const [name, rule] of Object.entries({
-    match: "RECIPIENT_NEW_ACCOUNT",
+  const rules = {
+    match: newDemo ? "SIM_FAILED" : "RECIPIENT_NEW_ACCOUNT",
     extra: "EXTRA_TRANSFER",
     recipient: "RECIPIENT_MISMATCH",
     amount: "AMOUNT_MISMATCH",
-    tamper: "TX_MODIFIED",
-  })) {
+  };
+  if (!newDemo) rules.tamper = "TX_MODIFIED";
+  for (const [name, rule] of Object.entries(rules)) {
     phase = name;
     const intent = {
       id: randomUUID(),
@@ -126,9 +128,9 @@ try {
       assert.equal(entry.afterMutation.verdict, "BLOCK");
       assert.equal(entry.afterMutation.findings[0]?.ruleId, rule);
     } else {
-      assert.equal(report.verdict, name === "match" ? "WARN" : "BLOCK");
+      assert.equal(report.verdict, name === "match" && !newDemo ? "WARN" : "BLOCK");
       assert.equal(report.findings[0]?.ruleId, rule);
-      if (name === "match") {
+      if (name === "match" && !newDemo) {
         assert.equal(
           report.simulation.deltas.find((d) => d.account === String(recipient))
             .lamportsDelta,

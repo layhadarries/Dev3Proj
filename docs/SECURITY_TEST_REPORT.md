@@ -17,4 +17,14 @@ Message hash `fb705c730a06f023008ba6a2ffe2799859b7ce495b09be1ef5f6f4588dfab17f`;
 - Correct payer signature, missing signature, wrong key, changed signature count, changed message, expiry, fee changes, altered policy, forged report and reuse were tested with deterministic RPC fixtures and ephemeral test-only keys. These are **not** live signed transactions. No wallet approval, submission, confirmation or Explorer transaction signature is claimed.
 - Live commands assert expected verdicts and fail on unavailable RPC. Public balances, fees, slots and hashes can change. Reproduce using [SECURITY_API.md](SECURITY_API.md).
 
-For a private read-only run with your own Devnet payer, use `node packages/security/scripts/wallet-evidence.mjs "$PAYER" > wallet-run.json` after building. This report contains identifying public addresses and serialized messages. Keep it local; the default output filename is gitignored.
+For private read-only evidence, build first and use an ignored local directory:
+
+```sh
+umask 077
+mkdir -p .local-evidence
+node packages/security/scripts/wallet-evidence.mjs --new-demo-wallet > .local-evidence/demo-wallet.json
+```
+
+This generates an independent ephemeral Devnet demonstration wallet, retains only its public key, and requests no funding. With zero lamports its otherwise matching transfer must block during simulation. The runner also tests static intent mismatches; an unfunded wallet cannot exercise a successful handoff. For the funded path, pass `"$PAYER"` in place of `--new-demo-wallet`, or omit the argument and set `SOLGUARD_TEST_PAYER`.
+
+Keep original RPC responses local and unmodified. Do not publish personal addresses, credentials, or identifying evidence without the owner's explicit permission. To share a demonstration, use a separate demonstration wallet and review the artifact before publication.
