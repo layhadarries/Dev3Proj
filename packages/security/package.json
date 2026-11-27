@@ -19,7 +19,6 @@
   "dependencies": {
     "@noble/curves": "1.9.7",
     "@noble/hashes": "^1.7.1",
-    "@solana/spl-token": "^0.4.12",
     "@solana/web3.js": "^1.98.0",
     "@solguard/shared": "workspace:*",
     "lossless-json": "4.3.0",
@@ -28,6 +27,6 @@
   "devDependencies": {
     "@types/node": "26.6.10",
     "fast-check": "^3.23.2",
-    "vitest": "^3.0.7"
+    "vitest": "4.1.12"
   }
 }
