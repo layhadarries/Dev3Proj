@@ -12,7 +12,7 @@ type CurrentSession = () => SessionIdentity;
 type Phase = "draft"|"confirmed"|"checking"|"verified"|"preparing"|"handed";
 interface Entry {
   owner:string; intent:Intent; phase:Phase; deadline:number; expiresAt:number;
-  message?:Buffer; report?:SecurityReport;
+  message?:Buffer; report?:SecurityReport; warningAcknowledged?:true;
 }
 const draftSchema = z.object({recipient:Base58PubkeySchema, amountBaseUnits:PositiveBigIntWireSchema}).strict();
 
@@ -80,11 +80,17 @@ export function createConfirmationGateway(policy: Omit<VerifyDeps,"network"|"wal
         return structuredClone(report);
       } catch(error) {entries.delete(id); throw error;}
     },
-    async handoff(resolve:CurrentSession,id:string,acknowledgedWarning=false) {
+    /** Invoke only for a CSRF-protected explicit acknowledgement of the displayed WARN. */
+    acknowledgeWarning(resolve:CurrentSession,id:string) {
+      const e=get(resolve,id,"verified");
+      if (e.report?.verdict!=="WARN" || e.warningAcknowledged) throw Error("INVALID_WARNING_ACKNOWLEDGEMENT");
+      e.warningAcknowledged=true;
+    },
+    async handoff(resolve:CurrentSession,id:string) {
       const e=get(resolve,id,"verified"); e.phase="preparing";
       try {
         if (!e.message || !e.report) throw Error("MISSING_VERIFICATION");
-        const wire=await prepareWalletApproval(e.intent,e.message,e.report,deps(e),acknowledgedWarning);
+        const wire=await prepareWalletApproval(e.intent,e.message,e.report,deps(e),e.warningAcknowledged);
         get(resolve,id,"preparing"); e.phase="handed"; return wire;
       } catch(error) {entries.delete(id); throw error;}
     },
