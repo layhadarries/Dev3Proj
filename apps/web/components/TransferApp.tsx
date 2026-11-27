@@ -1,16 +1,33 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createApi } from "../lib/client/api";
-import { confirmAndCheck, prepare, signAndSubmit, signIn, type Card, type Review } from "../lib/client/flow";
+import { ApiError, createApi } from "../lib/client/api";
+import {
+  confirmAndCheck, prepare, signAndSubmit, signIn, submissionOutcome,
+  type Card, type Review, type SubmissionOutcome,
+} from "../lib/client/flow";
 import { lamportsToSol } from "../lib/client/format";
 import { findWallet, type WalletProvider } from "../lib/client/wallet";
 
 type Step =
   | { name: "ask"; note?: string }
-  | { name: "confirm"; card: Card }
-  | { name: "review"; card: Card; review: Review }
-  | { name: "done"; signature: string };
+  | { name: "confirm"; card: Card; deadline: number }
+  | { name: "review"; card: Card; review: Review };
+
+/** A transaction sent for submission. It outlives resets, so its result is never lost. */
+interface Submission {
+  signature: string;
+  state: "sending" | SubmissionOutcome;
+  note?: string;
+}
+
+const SUBMISSION_TITLE: Record<Submission["state"], string> = {
+  sending: "Sending. Waiting for Devnet to confirm…",
+  confirmed: "Confirmed on Devnet",
+  failed: "The transaction failed on Devnet",
+  not_sent: "Not sent",
+  unknown: "Outcome unknown. Do not send it again yet",
+};
 
 export function TransferApp() {
   const api = useMemo(() => createApi(), []);
@@ -24,6 +41,9 @@ export function TransferApp() {
   const [now, setNow] = useState(0);
   // Bumped on every reset, so that late results from an abandoned request are ignored.
   const generation = useRef(0);
+  const [submission, setSubmission] = useState<Submission>();
+  // Blocks another transfer until the last one has a known result or the user says they checked it.
+  const unsettled = submission?.state === "sending" || submission?.state === "unknown";
 
   const reset = (note?: string) => {
     generation.current += 1;
@@ -53,21 +73,24 @@ export function TransferApp() {
     return () => clearInterval(timer);
   }, [step]);
 
-  async function run<T>(label: string, work: () => Promise<T>, then: (result: T) => void) {
+  async function run<T>(label: string, work: (isCurrent: () => boolean) => Promise<T>, then: (result: T) => void) {
     const current = ++generation.current;
+    const isCurrent = () => current === generation.current;
     setBusy(label);
     setError("");
     try {
-      const result = await work();
-      if (current === generation.current) then(result);
+      const result = await work(isCurrent);
+      if (isCurrent()) then(result);
     } catch (failure) {
-      if (current !== generation.current) return;
+      if (!isCurrent()) return;
+      // The session ended on the server, so offer to connect again. The request text is kept.
+      if (failure instanceof ApiError && failure.status === 401) setAddress(undefined);
       setError(failure instanceof Error ? failure.message : "Something went wrong.");
       // A failed step consumes the server's record, so start over.
       setAcknowledged(false);
       setStep({ name: "ask" });
     } finally {
-      if (current === generation.current) setBusy("");
+      if (isCurrent()) setBusy("");
     }
   }
 
@@ -75,14 +98,44 @@ export function TransferApp() {
     const found = findWallet();
     if (!found) return setError("No Solana wallet found. Install MetaMask, Phantom or Solflare and set it to Devnet.");
     void run("Connecting. Approve the sign-in message in your wallet.", () => signIn(api, found), (signedIn) => {
+      // The account can change while signing in, before anything is listening for it.
+      if (found.publicKey?.toString() !== signedIn) return setError("The wallet account changed. Connect again.");
       setWallet(found);
       setAddress(signedIn);
     });
   }
 
-  const expiresAt = step.name === "confirm" ? step.card.expiresAt : step.name === "review" ? step.review.expiresAt : 0;
-  const secondsLeft = Math.max(0, Math.ceil((expiresAt - now) / 1000));
-  const expired = expiresAt > 0 && now > 0 && secondsLeft === 0;
+  function sign(review: Review) {
+    let sent: string | undefined;
+    void run(
+      "Approve the transaction in your wallet",
+      async (isCurrent) => {
+        try {
+          await signAndSubmit(api, wallet!, address!, review, acknowledged, {
+            isCurrent,
+            onSubmit: (signature) => {
+              sent = signature;
+              setSubmission({ signature, state: "sending" });
+            },
+          });
+          setSubmission({ signature: sent!, state: "confirmed" });
+        } catch (failure) {
+          if (!sent) throw failure;
+          const note = failure instanceof Error ? failure.message : undefined;
+          setSubmission({ signature: sent, state: submissionOutcome(failure), ...(note ? { note } : {}) });
+          if (failure instanceof ApiError && failure.status === 401) setAddress(undefined);
+        }
+      },
+      () => {
+        setAcknowledged(false);
+        setStep({ name: "ask" });
+      },
+    );
+  }
+
+  const deadline = step.name === "confirm" ? step.deadline : step.name === "review" ? step.review.deadline : 0;
+  const secondsLeft = Math.max(0, Math.ceil((deadline - now) / 1000));
+  const expired = deadline > 0 && now > 0 && secondsLeft === 0;
 
   return (
     <main>
@@ -101,19 +154,26 @@ export function TransferApp() {
           maxLength={500}
           placeholder="send 0.1 SOL to <address>"
           value={message}
+          readOnly={!!busy && step.name === "ask"}
           onChange={(event) => {
             setMessage(event.target.value);
             if (step.name !== "ask") reset("The request changed.");
           }}
         />
         <button
-          disabled={!address || !message.trim() || !!busy}
-          onClick={() =>
+          disabled={!address || !message.trim() || !!busy || unsettled}
+          onClick={() => {
+            // A settled result belongs to the previous transfer; do not show it beside a new one.
+            setSubmission(undefined);
             void run("Reading your request", () => prepare(api, address!, message), (result) => {
               setAcknowledged(false);
-              setStep("card" in result ? { name: "confirm", card: result.card } : { name: "ask", note: result.reason });
-            })
-          }
+              setStep(
+                "card" in result
+                  ? { name: "confirm", card: result.card, deadline: result.deadline }
+                  : { name: "ask", note: result.reason },
+              );
+            });
+          }}
         >
           Continue
         </button>
@@ -161,7 +221,7 @@ export function TransferApp() {
             <>
               <p>Simulated balance changes (SOL)</p>
               <dl>
-                {step.review.explanation.balanceChanges.map((change) => (
+                {step.review.explanation.balanceChanges.filter((change) => !/^[+-]0$/.test(change.changeSol)).map((change) => (
                   <div key={change.account} className="contents">
                     <dt>{change.changeSol}</dt><dd>{change.account}</dd>
                   </div>
@@ -181,13 +241,7 @@ export function TransferApp() {
           {step.review.explanation.verdict !== "BLOCK" && (
             <button
               disabled={!!busy || expired || (step.review.explanation.verdict === "WARN" && !acknowledged)}
-              onClick={() =>
-                void run(
-                  "Approve the transaction in your wallet",
-                  () => signAndSubmit(api, wallet!, address!, step.review, acknowledged),
-                  (signature) => setStep({ name: "done", signature }),
-                )
-              }
+              onClick={() => sign(step.review)}
             >
               Sign with wallet
             </button>
@@ -198,15 +252,20 @@ export function TransferApp() {
 
       {expired && <p role="status">Time ran out. Start again.</p>}
 
-      {step.name === "done" && (
-        <section>
-          <h2>Submitted</h2>
-          <p>
-            <a href={`https://explorer.solana.com/tx/${encodeURIComponent(step.signature)}?cluster=devnet`} target="_blank" rel="noreferrer">
-              View on Solana Explorer
-            </a>
-          </p>
-          <p>Check the Explorer page for the final result.</p>
+      {submission && (
+        <section aria-live="polite" className={submission.state === "confirmed" ? "PASS" : submission.state === "sending" ? "" : "WARN"}>
+          <h2>{SUBMISSION_TITLE[submission.state]}</h2>
+          {submission.note && submission.state !== "confirmed" && <p>{submission.note}</p>}
+          {submission.state !== "not_sent" && (
+            <p>
+              <a href={`https://explorer.solana.com/tx/${encodeURIComponent(submission.signature)}?cluster=devnet`} target="_blank" rel="noreferrer">
+                View on Solana Explorer
+              </a>
+            </p>
+          )}
+          {submission.state === "unknown" && (
+            <button onClick={() => setSubmission(undefined)}>I have checked Explorer</button>
+          )}
         </section>
       )}
 

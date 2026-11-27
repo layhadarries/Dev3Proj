@@ -15,6 +15,7 @@ const DEVNET = "solana:devnet";
 interface StandardAccount {
   address: string;
   chains?: readonly string[];
+  features?: readonly string[];
 }
 
 /** The parts of a Wallet Standard wallet that the app uses. MetaMask is only reachable this way. */
@@ -44,6 +45,13 @@ const REQUIRED = ["standard:connect", "solana:signMessage", "solana:signTransact
 export const usable = (wallet: StandardWallet) =>
   wallet.chains.includes(DEVNET) && REQUIRED.every((name) => name in wallet.features);
 
+/** An account may support less than its wallet does. Lists it leaves out are not held against it. */
+const canSign = (account: StandardAccount) =>
+  (account.chains?.includes(DEVNET) ?? true) &&
+  (account.features
+    ? ["solana:signMessage", "solana:signTransaction"].every((name) => account.features?.includes(name))
+    : true);
+
 export function fromStandard(wallet: StandardWallet): WalletProvider {
   const features = wallet.features as unknown as Features;
   let account: StandardAccount | undefined;
@@ -59,8 +67,8 @@ export function fromStandard(wallet: StandardWallet): WalletProvider {
     },
     async connect() {
       const { accounts } = await features["standard:connect"].connect();
-      account = accounts[0];
-      if (!account) throw new Error(`${wallet.name} did not share a Solana account.`);
+      account = accounts.find(canSign);
+      if (!account) throw new Error(`${wallet.name} did not share a Solana account that can sign on Devnet.`);
     },
     async signMessage(message) {
       const [result] = await features["solana:signMessage"].signMessage({ account: current(), message });
@@ -80,7 +88,7 @@ export function fromStandard(wallet: StandardWallet): WalletProvider {
     on(event, listener) {
       if (event !== "accountChanged") return;
       stop = features["standard:events"]?.on("change", (change) => {
-        if (!change.accounts || wallet.accounts[0]?.address === account?.address) return;
+        if (!change.accounts || wallet.accounts.find(canSign)?.address === account?.address) return;
         account = undefined;
         listener();
       });

@@ -1,10 +1,11 @@
 import { VersionedTransaction } from "@solana/web3.js";
+import bs58 from "bs58";
 import type { Explanation, ParseResult } from "@solguard/agent";
 import type { BuiltTransaction, IntentWire, SecurityReportWire } from "@solguard/shared";
-import type { Api } from "./api";
+import { ApiError, type Api } from "./api";
 import type { WalletProvider } from "./wallet";
 
-/** The server's window from confirmation to submission. */
+/** The server's window, both for confirming a card and from confirmation to submission. */
 export const WINDOW_MS = 60_000;
 
 /** What the server stored, and what the user is asked to confirm. */
@@ -20,7 +21,8 @@ export interface Card {
 
 export interface Review {
   id: string;
-  expiresAt: number;
+  /** On this device's clock, so that a wrong clock cannot distort the countdown. */
+  deadline: number;
   transaction: BuiltTransaction;
   report: SecurityReportWire;
   explanation: Explanation;
@@ -43,10 +45,13 @@ export async function prepare(
   api: Api,
   address: string,
   message: string,
-): Promise<{ card: Card } | { reason: string }> {
+  now: () => number = Date.now,
+): Promise<{ card: Card; deadline: number } | { reason: string }> {
   const parsed = await api<ParseResult>("parse", { message });
   if (parsed.status === "needs_clarification") return { reason: parsed.question };
   if (parsed.status === "unsupported") return { reason: parsed.reason };
+  // Counted from before the request, so the displayed time never exceeds the server's.
+  const deadline = now() + WINDOW_MS;
   const card = await api<Card>("stage", parsed.draft);
   if (
     card.wallet !== address ||
@@ -57,11 +62,12 @@ export async function prepare(
   ) {
     throw new Error("The server's confirmation does not match your request or wallet. Nothing was confirmed.");
   }
-  return { card };
+  return { card, deadline };
 }
 
 /** Call only from the user's explicit click on the card. */
-export async function confirmAndCheck(api: Api, card: Card): Promise<Review> {
+export async function confirmAndCheck(api: Api, card: Card, now: () => number = Date.now): Promise<Review> {
+  const deadline = now() + WINDOW_MS;
   const { intent } = await api<{ intent: IntentWire }>("confirm", { id: card.id });
   if (
     intent.id !== card.id ||
@@ -78,7 +84,23 @@ export async function confirmAndCheck(api: Api, card: Card): Promise<Review> {
     throw new Error("The security report is for a different transaction.");
   }
   const explanation = await api<Explanation>("explain", built.report);
-  return { id: card.id, expiresAt: intent.confirmedAt + WINDOW_MS, ...built, explanation };
+  return { id: card.id, deadline, ...built, explanation };
+}
+
+export type SubmissionOutcome = "confirmed" | "failed" | "not_sent" | "unknown";
+
+/** Decides what a failed submit request means. Anything unclear counts as possibly sent. */
+export function submissionOutcome(error: unknown): SubmissionOutcome {
+  if (!(error instanceof ApiError)) return "unknown";
+  if (error.status >= 400 && error.status < 500) return "not_sent";
+  return /failed on Devnet/.test(error.message) ? "failed" : "unknown";
+}
+
+export interface SigningHooks {
+  /** False once the user has abandoned this review; nothing further is signed or sent. */
+  isCurrent(): boolean;
+  /** Called with the transaction signature immediately before it is sent to the server. */
+  onSubmit(signature: string): void;
 }
 
 /**
@@ -91,25 +113,35 @@ export async function signAndSubmit(
   address: string,
   review: Review,
   acknowledged: boolean,
+  hooks: SigningHooks,
 ): Promise<string> {
+  const assertCurrent = () => {
+    if (!hooks.isCurrent()) throw new Error("Cancelled. Nothing was sent.");
+    if (wallet.publicKey?.toString() !== address) throw new Error("The wallet account changed. Start again.");
+  };
   const { verdict } = review.report;
   if (verdict === "BLOCK") throw new Error("This transaction is blocked.");
   if (verdict === "WARN") {
     if (!acknowledged) throw new Error("Acknowledge the warning first.");
+    assertCurrent();
     await api("acknowledge", { id: review.id });
   }
+  assertCurrent();
   const { wire } = await api<{ wire: string }>("handoff", { id: review.id });
   const unsigned = VersionedTransaction.deserialize(fromBase64(wire));
   const expected = base64(unsigned.message.serialize());
   if (expected !== review.transaction.messageBase64) {
     throw new Error("The transaction to sign differs from the one that was checked.");
   }
-  if (wallet.publicKey?.toString() !== address) throw new Error("The wallet account changed. Start again.");
+  assertCurrent();
   const signed = await wallet.signTransaction(unsigned);
   if (base64(signed.message.serialize()) !== expected) {
     throw new Error("The wallet changed the transaction, so it was not submitted.");
   }
-  if (wallet.publicKey?.toString() !== address) throw new Error("The wallet account changed. Start again.");
+  assertCurrent();
+  const first = signed.signatures[0];
+  if (!first || first.every((byte) => byte === 0)) throw new Error("The wallet did not sign the transaction.");
+  hooks.onSubmit(bs58.encode(first));
   const { signature } = await api<{ signature: string }>("submit", { id: review.id, signed: base64(signed.serialize()) });
   return signature;
 }

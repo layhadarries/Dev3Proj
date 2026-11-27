@@ -1,7 +1,9 @@
 import { Keypair, SystemProgram, Transaction, VersionedMessage, VersionedTransaction } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
-import { createApi, type Api } from "../lib/client/api";
-import { confirmAndCheck, prepare, signAndSubmit, signIn, type Card, type Review } from "../lib/client/flow";
+import { ApiError, createApi, type Api } from "../lib/client/api";
+import {
+  confirmAndCheck, prepare, signAndSubmit, signIn, submissionOutcome, type Card, type Review, type SigningHooks,
+} from "../lib/client/flow";
 import { lamportsToSol } from "../lib/client/format";
 import type { WalletProvider } from "../lib/client/wallet";
 
@@ -22,7 +24,7 @@ const card: Card = {
   recipient, amountBaseUnits: "5", expiresAt: 1000,
 };
 const review = (verdict: "PASS" | "WARN" | "BLOCK") =>
-  ({ id: card.id, expiresAt: 1, transaction: { messageBase64: message.toString("base64") }, report: { verdict } }) as unknown as Review;
+  ({ id: card.id, deadline: 1, transaction: { messageBase64: message.toString("base64") }, report: { verdict } }) as unknown as Review;
 
 function server(replies: Record<string, unknown>) {
   const calls: string[] = [];
@@ -47,6 +49,8 @@ function wallet(tamper = false): WalletProvider & { signed: number } {
     },
   };
 }
+const sent: string[] = [];
+const live: SigningHooks = { isCurrent: () => true, onSubmit: (signature) => sent.push(signature) };
 const good = { handoff: { wire: unsignedWire(message) }, acknowledge: { ok: true }, submit: { signature: "sig" } };
 
 describe("sign in", () => {
@@ -60,7 +64,7 @@ describe("sign in", () => {
 describe("prepare", () => {
   const parsed = { status: "ready", draft: { recipient, amountBaseUnits: "5" }, source: "rules" };
   it("returns the server card", async () => {
-    expect(await prepare(server({ parse: parsed, stage: card }).api, address, "x")).toEqual({ card });
+    expect(await prepare(server({ parse: parsed, stage: card }).api, address, "x", () => 5)).toEqual({ card, deadline: 60_005 });
   });
   it("passes a clarification through without staging", async () => {
     const { api, calls } = server({ parse: { status: "needs_clarification", question: "How much?" } });
@@ -79,7 +83,7 @@ describe("confirm and check", () => {
   const built = { transaction: { messageHash: "h" }, report: { intentId: card.id, messageHash: "h" } };
   it("starts the window at confirmation", async () => {
     const { api, calls } = server({ confirm: { intent }, build: built, explain: {} });
-    expect((await confirmAndCheck(api, card)).expiresAt).toBe(60_010);
+    expect((await confirmAndCheck(api, card, () => 7)).deadline).toBe(60_007);
     expect(calls).toEqual(["confirm", "build", "explain"]);
   });
   it("does not build if the confirmed intent differs", async () => {
@@ -96,38 +100,81 @@ describe("confirm and check", () => {
 describe("sign and submit", () => {
   it("signs the handed-off message and submits it", async () => {
     const { api, calls } = server(good);
-    expect(await signAndSubmit(api, wallet(), address, review("PASS"), false)).toBe("sig");
+    expect(await signAndSubmit(api, wallet(), address, review("PASS"), false, live)).toBe("sig");
     expect(calls).toEqual(["handoff", "submit"]);
   });
   it("never signs a blocked transaction", async () => {
     const w = wallet();
     const { api, calls } = server(good);
-    await expect(signAndSubmit(api, w, address, review("BLOCK"), true)).rejects.toThrow("blocked");
+    await expect(signAndSubmit(api, w, address, review("BLOCK"), true, live)).rejects.toThrow("blocked");
     expect([calls, w.signed]).toEqual([[], 0]);
   });
   it("needs an explicit acknowledgement for a warning", async () => {
     const first = server(good);
-    await expect(signAndSubmit(first.api, wallet(), address, review("WARN"), false)).rejects.toThrow("Acknowledge");
+    await expect(signAndSubmit(first.api, wallet(), address, review("WARN"), false, live)).rejects.toThrow("Acknowledge");
     expect(first.calls).toEqual([]);
     const second = server(good);
-    await signAndSubmit(second.api, wallet(), address, review("WARN"), true);
+    await signAndSubmit(second.api, wallet(), address, review("WARN"), true, live);
     expect(second.calls).toEqual(["acknowledge", "handoff", "submit"]);
   });
   it("does not sign a swapped handoff", async () => {
     const w = wallet();
     const { api } = server({ ...good, handoff: { wire: unsignedWire(bytes(6)) } });
-    await expect(signAndSubmit(api, w, address, review("PASS"), false)).rejects.toThrow("differs");
+    await expect(signAndSubmit(api, w, address, review("PASS"), false, live)).rejects.toThrow("differs");
     expect(w.signed).toBe(0);
   });
   it("does not submit if the wallet changes the transaction", async () => {
     const { api, calls } = server(good);
-    await expect(signAndSubmit(api, wallet(true), address, review("PASS"), false)).rejects.toThrow("wallet changed");
+    await expect(signAndSubmit(api, wallet(true), address, review("PASS"), false, live)).rejects.toThrow("wallet changed");
     expect(calls).toEqual(["handoff"]);
   });
   it("stops if the account changed", async () => {
     const w = wallet();
-    await expect(signAndSubmit(server(good).api, w, recipient, review("PASS"), false)).rejects.toThrow("account changed");
+    await expect(signAndSubmit(server(good).api, w, recipient, review("PASS"), false, live)).rejects.toThrow("account changed");
     expect(w.signed).toBe(0);
+  });
+});
+
+describe("abandoning and tracking a submission", () => {
+  /** Hooks that report the review as abandoned once the given route has been called. */
+  function abandonedAfter(calls: string[], route: string): SigningHooks {
+    return { isCurrent: () => !calls.includes(route), onSubmit: () => {} };
+  }
+  it("does not open the wallet if abandoned during the handoff", async () => {
+    const w = wallet();
+    const { api, calls } = server(good);
+    await expect(signAndSubmit(api, w, address, review("PASS"), false, abandonedAfter(calls, "handoff"))).rejects.toThrow("Cancelled");
+    expect([w.signed, calls]).toEqual([0, ["handoff"]]);
+  });
+  it("does not submit if abandoned while the wallet prompt is open", async () => {
+    const w = wallet();
+    const { api, calls } = server(good);
+    const hooks: SigningHooks = { isCurrent: () => w.signed === 0, onSubmit: () => {} };
+    await expect(signAndSubmit(api, w, address, review("PASS"), false, hooks)).rejects.toThrow("Cancelled");
+    expect(calls).toEqual(["handoff"]);
+  });
+  it("reports the transaction signature before submitting", async () => {
+    const order: string[] = [];
+    const api: Api = async <T>(route: string) => {
+      order.push(route);
+      if (route === "submit") throw new Error("connection lost");
+      return good[route as "handoff"] as T;
+    };
+    let reported = "";
+    const hooks: SigningHooks = { isCurrent: () => true, onSubmit: (s) => { reported = s; order.push("reported"); } };
+    await expect(signAndSubmit(api, wallet(), address, review("PASS"), false, hooks)).rejects.toThrow("connection lost");
+    expect(order).toEqual(["handoff", "reported", "submit"]);
+    expect(reported).toMatch(/^[1-9A-HJ-NP-Za-km-z]{80,90}$/);
+  });
+  it.each([
+    [new Error("connection lost"), "unknown"],
+    [new ApiError("Could not complete the request", 502), "unknown"],
+    [new ApiError("Transaction is unconfirmed (signature: x). Do not submit again", 504), "unknown"],
+    [new ApiError("Transaction failed on Devnet (signature: x)", 502), "failed"],
+    [new ApiError("Confirmation is missing or no longer valid.", 409), "not_sent"],
+    [new ApiError("Too many requests", 429), "not_sent"],
+  ])("classifies %s", (error, outcome) => {
+    expect(submissionOutcome(error)).toBe(outcome);
   });
 });
 
@@ -136,7 +183,7 @@ describe("helpers", () => {
     const api = createApi((async () => new Response('{"error":"nope"}', { status: 409 })) as typeof fetch);
     await expect(api("x", {})).rejects.toThrow("nope");
     const missing = createApi((async () => new Response("<html>", { status: 404 })) as typeof fetch);
-    await expect(missing("x", {})).rejects.toThrow("HTTP 404");
+    await expect(missing("x", {})).rejects.toMatchObject({ status: 404, message: "x failed (HTTP 404)" });
   });
   it("formats lamports exactly", () => {
     expect(lamportsToSol("9007199254740993")).toBe("9007199.254740993");

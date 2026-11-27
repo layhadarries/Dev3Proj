@@ -77,15 +77,12 @@ describe("parser", () => {
     expect((await parseTransfer(loose, broken)).status).toBe("needs_clarification");
   });
   it.each([
-    ["clarify", { action: "clarify" }],
-    ["unsupported", { action: "unsupported" }],
-  ])("respects the model's %s decision without creating a draft", async (_name, output) => {
-    const result = await parseTransfer(loose, says(output));
-    if (result.status === "needs_clarification") expect(result.question).toBeTruthy();
-    else {
-      expect(result.status).toBe("unsupported");
-      if (result.status === "unsupported") expect(result.reason).toBeTruthy();
-    }
+    ["clarify", "needs_clarification"],
+    ["unsupported", "unsupported"],
+  ])("respects the model's %s decision without creating a draft", async (action, status) => {
+    const result = await parseTransfer(loose, says({ action }));
+    expect(result.status).toBe(status);
+    expect(result).not.toHaveProperty("draft");
   });
   it.each([
     `swap 1 SOL to USDC`,
@@ -298,6 +295,18 @@ describe("model client", () => {
     });
     await expect(client.complete("s", "u")).rejects.toThrow(/^LLM request failed with HTTP 429$/);
     expect(Object.keys(sent).sort()).toEqual(["max_tokens", "messages", "model", "temperature"]);
+  });
+  it("does not follow redirects", async () => {
+    let redirect: RequestRedirect | undefined;
+    const client = openAiCompatibleClient({
+      baseUrl: "https://example.invalid/v1", apiKey: "k", model: "m",
+      fetch: (async (_url: unknown, init: RequestInit) => {
+        redirect = init.redirect;
+        return new Response("", { status: 500 });
+      }) as typeof fetch,
+    });
+    await expect(client.complete("s", "u")).rejects.toThrow();
+    expect(redirect).toBe("error");
   });
   it("is disabled without full configuration", () => {
     expect(llmFromEnv({ LLM_MODEL: "m" })).toBeUndefined();

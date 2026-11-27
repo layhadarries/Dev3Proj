@@ -17,6 +17,8 @@ export function openAiCompatibleClient(options: OpenAiCompatibleOptions): LlmCli
     async complete(system, user) {
       const response = await doFetch(`${options.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
         method: "POST",
+        // A redirect would send the user's text to a destination nobody configured.
+        redirect: "error",
         headers: { "content-type": "application/json", authorization: `Bearer ${options.apiKey}` },
         body: JSON.stringify({
           model: options.model,

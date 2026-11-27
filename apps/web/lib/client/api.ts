@@ -1,4 +1,14 @@
 /** Same-origin JSON calls to the app's routes. */
+/** A refusal or failure reported by the server. A lost response is a plain Error instead. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export type Api = <T>(route: string, body: unknown) => Promise<T>;
 
 export const createApi = (send: typeof fetch = (...args) => fetch(...args)): Api =>
@@ -12,7 +22,7 @@ export const createApi = (send: typeof fetch = (...args) => fetch(...args)): Api
     const data: unknown = await response.json().catch(() => null);
     if (!response.ok || data === null) {
       const error = (data as { error?: unknown } | null)?.error;
-      throw new Error(typeof error === "string" ? error : `${route} failed (HTTP ${response.status})`);
+      throw new ApiError(typeof error === "string" ? error : `${route} failed (HTTP ${response.status})`, response.status);
     }
     return data as T;
   };

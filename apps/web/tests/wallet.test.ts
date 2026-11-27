@@ -46,6 +46,19 @@ describe("wallet standard", () => {
     expect(usable({ ...wallet, chains: ["solana:mainnet"] })).toBe(false);
     expect(usable({ ...wallet, features: { "standard:connect": {} } })).toBe(false);
   });
+  it("picks the first account able to sign on Devnet", async () => {
+    const { wallet } = standard();
+    wallet.accounts = [
+      { address: "mainnet", chains: ["solana:mainnet"] },
+      { address: "read-only", chains: ["solana:devnet"], features: ["solana:signMessage"] },
+      { address, chains: ["solana:devnet"], features: ["solana:signMessage", "solana:signTransaction"] },
+    ] as never;
+    const provider = fromStandard(wallet);
+    await provider.connect();
+    expect(provider.publicKey?.toString()).toBe(address);
+    wallet.accounts = [{ address: "mainnet", chains: ["solana:mainnet"] }] as never;
+    await expect(fromStandard(wallet).connect()).rejects.toThrow("sign on Devnet");
+  });
   it("signs on Devnet without changing the message", async () => {
     const { wallet, seen } = standard();
     const provider = fromStandard(wallet);
