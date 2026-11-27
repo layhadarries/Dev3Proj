@@ -8,6 +8,7 @@ export { hashMessage } from "./integrity/hash.js";
 export { decodeTransaction, compareTransfer } from "./decoder/sol.js";
 export { aggregateVerdict } from "./policies/verdict.js";
 export type { RpcClient } from "./rpc/types.js";
+export { createDevnetRpc } from "./rpc/devnet.js";
 export {
   ENGINE_VERSION,
   verify,

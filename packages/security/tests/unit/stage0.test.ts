@@ -184,7 +184,7 @@ describe("Stage 0: verify() and verifySigned() stubs", () => {
     });
 
     expect(report.verdict).toBe("BLOCK");
-    expect(report.findings[0]?.ruleId).toBe("INTERNAL_ERROR");
+    expect(report.findings[0]?.ruleId).toBe("UNDECODABLE_MESSAGE");
     expect(report.messageHash).toBe(hashMessage(msg));
     expect(report.generatedAt).toBe(1764184960000);
     expect(() => SecurityReportSchema.parse(report)).not.toThrow();

@@ -7,7 +7,7 @@ const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
-type ReadMethod = "getGenesisHash" | "getBalance" | "getAccountInfo" | "getLatestBlockhash" | "isBlockhashValid";
+type ReadMethod = "getGenesisHash" | "getBalance" | "getAccountInfo" | "getLatestBlockhash" | "isBlockhashValid" | "getFeeForMessage" | "simulateTransaction";
 
 async function readRpc(env: Environment, method: ReadMethod, params: unknown[]) {
   if ((env.SOLANA_NETWORK ?? "devnet") !== "devnet" ||
@@ -42,6 +42,36 @@ export async function checkDevnetIdentity(env: Environment = process.env) {
 }
 
 const u64 = z.bigint().nonnegative().max(0xffffffffffffffffn);
+const safeSlot = u64.max(BigInt(Number.MAX_SAFE_INTEGER)).transform(Number);
+const observed = z.object({ slot: safeSlot });
+const simulationValue = z.object({
+  err: z.null(), fee: u64, preBalances: z.array(u64), postBalances: z.array(u64),
+  innerInstructions: z.array(z.never()), preTokenBalances: z.array(z.never()), postTokenBalances: z.array(z.never()),
+  replacementBlockhash: z.null(), logs: z.array(z.string()).min(1), unitsConsumed: safeSlot,
+  accounts: z.array(z.object({owner: z.literal("11111111111111111111111111111111"), executable: z.literal(false),
+    lamports: u64, data: z.tuple([z.literal(""),z.literal("base64")])})).length(2),
+});
+
+export function createDevnetRpc(env: Environment = process.env) {
+  return {
+    identity: () => checkDevnetIdentity(env),
+    fresh: (hash: string, slot: bigint) => requireValidBlockhash(hash, slot, env),
+    async fee(message: string) {
+      return z.object({context: observed, value: u64}).parse(await readRpc(env, "getFeeForMessage",
+        [message, {commitment: "confirmed"}]));
+    },
+    async simulate(message: string, addresses: string[], minContextSlot: number) {
+      const wire = Buffer.concat([Buffer.from([1]), Buffer.alloc(64), Buffer.from(message,"base64")]);
+      const result = await readRpc(env,"simulateTransaction",[wire.toString("base64"), {
+        encoding:"base64", commitment:"confirmed", minContextSlot, sigVerify:false, replaceRecentBlockhash:false,
+        innerInstructions:true, accounts:{encoding:"base64",addresses},
+      }]);
+      const failure = z.object({value:z.object({err:z.union([z.string(),z.record(z.unknown())])})}).safeParse(result);
+      if (failure.success) throw new Error("SIM_FAILED");
+      return z.object({context:observed,value:simulationValue}).parse(result);
+    },
+  };
+}
 const context = z.object({ slot: u64 });
 const latestBlockhash = z.object({
   context, value: z.object({ blockhash: Base58PubkeySchema, lastValidBlockHeight: u64 }),
