@@ -18,7 +18,7 @@ Built for the Zettabyte team at the Dev3pack Hackathon (27-29 November 2026). De
 
 The hackathon runs 27-29 November 2026.
 
-- **Before (26 November):** this README and the project plan, the project scaffold, a first version of the shared data contracts and security checks, and a first version of the request parser and transaction builder with a script for a local open-weight model.
+- **Before (26 November):** the first README, the project scaffold, a first version of the shared data contracts and security checks, and a first version of the request parser and transaction builder with a script for a local open-weight model.
 - **During (27-29 November):** the Devnet security engine and confirmation step, the adaptation and hardening of the parser and builder, the web app and server, wallet signing, Devnet submission, further tests, CI and documentation.
 
 AI coding assistants were used. The commit history shows the dates.
