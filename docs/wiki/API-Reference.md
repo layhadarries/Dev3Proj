@@ -21,7 +21,7 @@ All endpoints are same-origin application routes, not a standalone public SDK. P
 | `POST /api/handoff` | Session | `{ "id": "<UUID>" }` | `{ "wire": "<canonical base64 unsigned transaction>" }` |
 | `POST /api/submit` | Session | `{ "id": "<UUID>", "signed": "<base64 signed transaction>" }` | `{ "signature": "<Base58 transaction signature>" }` only after confirmed/finalized success |
 
-Schemas are strict where defined; unknown request fields are rejected. Amounts are canonical positive decimal strings in lamports, not floating-point SOL.
+Strict request schemas reject unknown fields. `/api/explain` instead parses the report with `SecurityReportWireSchema`: an otherwise valid report is accepted and unknown fields are stripped. Amounts are canonical positive decimal strings in lamports, not floating-point SOL.
 
 ## `POST /api/analyze`
 
@@ -49,32 +49,13 @@ The security decoder then requires the supported **unsigned legacy transaction w
 
 ### Verification and response
 
-The route constructs an internal intent from the session wallet, validated recipient and amount, then runs the same deterministic Devnet verifier. It validates the security report and serializes bigints as decimal strings:
-
-```json
-{
-  "report": {
-    "intentId": "UUID",
-    "messageHash": "64 lowercase hex SHA-256 characters",
-    "verdict": "PASS",
-    "findings": [],
-    "decodedInstructions": [],
-    "simulation": {},
-    "feeLamports": "5000",
-    "checkedAtSlot": 123,
-    "generatedAt": 1730000000000,
-    "engineVersion": "0.2.0"
-  }
-}
-```
-
-The example is illustrative; wire bigint fields are decimal strings, while slot/time fields are numbers. A real report includes decoded instructions and required simulation data for PASS/WARN. BLOCK reports may have `simulation: null` when rejected before simulation or when evidence is unavailable.
+The route constructs an internal intent from the session wallet, validated recipient and amount, then runs the same deterministic Devnet verifier. The success envelope is `{ "report": SecurityReportWire }`; the [wire schema](../../packages/shared/src/schemas.ts) serializes bigint amounts as decimal strings. PASS/WARN reports carry decoded instructions, fees and simulation evidence. A BLOCK report can have `simulation: null` if verification stopped before simulation or required evidence was unavailable.
 
 After the asynchronous RPC verification, the server resolves the session again and checks that session ID, wallet and network are unchanged. A changed/expired session invalidates the response. The analyzer does not call the wallet, confirmation gateway, handoff, signing, submission or broadcast path.
 
 ### Limits and errors
 
-`/api/analyze` is limited to **5 requests per minute per authenticated session and wallet**, **30 per minute globally**, **2 concurrent analysis operations**, **1 concurrent analysis per wallet**, and the shared **16 concurrent expensive-operation** ceiling. Limits are process-local. Invalid input returns 400; absent/expired session 401; cross-origin request 403; body too large 413; wrong content type 415; quota/concurrency limit 429 with `Retry-After`; a session changed during verification returns a sanitized 502; infrastructure or RPC failure is sanitized and fails closed (normally 502/503 depending on boundary). All failures are non-cacheable.
+`/api/analyze` is limited to **5 requests per minute per authenticated session and wallet**, **30 per minute globally**, **2 concurrent analysis operations**, **1 concurrent analysis per wallet**, and the shared **16 concurrent expensive-operation** ceiling. Limits are process-local. Invalid input returns 400; absent/expired session 401; cross-origin request 403; body too large 413; wrong content type 415; quota/concurrency limit 429 with `Retry-After`; session expiry or change during verification returns 409 (`AUTHENTICATED_DEVNET_SESSION_REQUIRED`). A verifier-handled RPC failure returns HTTP 200 with a `BLOCK` report (for example, `RPC_UNAVAILABLE`); inspect `report.verdict` and `report.findings`. Route-level failures that prevent a report can instead return a sanitized 502 or 503. All failures are non-cacheable.
 
 ## Common status codes
 

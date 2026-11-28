@@ -34,8 +34,7 @@ pnpm test
 ## Start the web app
 
 ```bash
-cd apps/web
-pnpm dev
+pnpm --filter @solguard/web dev
 ```
 
 The app normally expects a same-origin browser at `http://localhost:3000`.
@@ -45,12 +44,11 @@ Set `APP_ORIGIN` if the development hostname differs.
 
 ```bash
 node packages/security/scripts/demo.mjs match
-node packages/security/scripts/demo.mjs warn
 node packages/security/scripts/demo.mjs extra
 node packages/security/scripts/demo.mjs recipient
 node packages/security/scripts/demo.mjs amount
-node packages/security/scripts/demo.mjs fee
 node packages/security/scripts/demo.mjs tamper
+node packages/security/scripts/demo.mjs unsupported
 ```
 
 Only the security demo scenarios use public Devnet RPC reads and fixture/public
