@@ -13,6 +13,7 @@ export function dispatchApiRoute(route: string, request: Request): Promise<Respo
     ["session", applicationHandlers.signIn],
     ["session/logout", applicationHandlers.logout],
     ["parse", applicationHandlers.parse],
+    ["analyze", applicationHandlers.analyze],
     ["stage", applicationHandlers.stage],
     ["confirm", applicationHandlers.confirm],
     ["build", applicationHandlers.build],

@@ -1,11 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { Connection, VersionedTransaction, type ConnectionConfig, type SignatureStatus } from "@solana/web3.js";
 import {
   Base58PubkeySchema,
   PositiveBigIntWireSchema,
   SecurityReportWireSchema,
   serializeIntent,
+  serializeReport,
 } from "@solguard/shared";
-import { createConfirmationGateway, createDevnetRpc, getRecentBlockhash, type RpcClient } from "@solguard/security";
+import { createConfirmationGateway, createDevnetRpc, getRecentBlockhash, verifyUnsigned, type RpcClient } from "@solguard/security";
 import { agentHandlers, explainReport, llmFromEnv, parseTransfer } from "@solguard/agent";
 import { clientAddress, errorResponse, HttpError, InFlightLimiter, jsonResponse, RateLimiter, readJson, requireSameOrigin } from "./http";
 import { SessionStore } from "./sessions";
@@ -291,6 +293,32 @@ function submitInput(input: unknown): { id: string; signed: string } {
   return { id: record.id, signed: record.signed };
 }
 
+function analyzeInput(input: unknown): { recipient: string; amountBaseUnits: string; transaction: Uint8Array } {
+  const record = objectInput(input, ["recipient", "amountBaseUnits", "transactionBase64"]);
+  if (
+    typeof record.recipient !== "string" ||
+    !Base58PubkeySchema.safeParse(record.recipient).success ||
+    typeof record.amountBaseUnits !== "string" ||
+    !PositiveBigIntWireSchema.safeParse(record.amountBaseUnits).success ||
+    typeof record.transactionBase64 !== "string" ||
+    record.transactionBase64.length < 4 ||
+    record.transactionBase64.length > 1644 ||
+    record.transactionBase64.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(record.transactionBase64)
+  ) throw new Error("INVALID_INPUT");
+  const transaction = Buffer.from(record.transactionBase64, "base64");
+  if (
+    transaction.length <= 65 ||
+    transaction.length > 1232 ||
+    transaction.toString("base64") !== record.transactionBase64
+  ) throw new Error("INVALID_INPUT");
+  return {
+    recipient: record.recipient,
+    amountBaseUnits: record.amountBaseUnits,
+    transaction,
+  };
+}
+
 export interface ApplicationDependencies {
   allowedOrigin?: string;
   sessions?: SessionStore;
@@ -556,6 +584,50 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
         concurrencyLimit: 4,
         walletConcurrencyLimit: 2,
       }, async (input) => parseTransfer(input.message, dependencies.llm ?? llmFromEnv(process.env)));
+    },
+
+    analyze: (request: Request) => {
+      const { route, options } = protectedRoute("analyze", 5);
+      return invoke(request, route, analyzeInput, {
+        ...options,
+        walletLimit: 5,
+        globalLimit: 30,
+        concurrencyGroup: "analyze",
+        concurrencyLimit: 2,
+        walletConcurrencyLimit: 1,
+      }, async (input, session, _origin, currentRequest) => {
+        if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
+        if (input.recipient === session.walletPublicKey) {
+          throw new HttpError(400, "Recipient must differ from the connected wallet");
+        }
+        const confirmedAt = now();
+        if (!Number.isSafeInteger(confirmedAt) || confirmedAt < 0) {
+          throw new HttpError(503, "Security analysis is temporarily unavailable");
+        }
+        const intent = {
+          id: randomUUID(),
+          kind: "transfer" as const,
+          asset: { type: "SOL" as const },
+          recipient: input.recipient,
+          payer: session.walletPublicKey,
+          amountBaseUnits: BigInt(input.amountBaseUnits),
+          confirmedAt,
+        };
+        const report = await verifyUnsigned(intent, input.transaction, {
+          rpc: securityRpc,
+          now,
+          walletPublicKey: session.walletPublicKey,
+          network: session.network,
+          maxSpendLamports: spendLimit,
+        });
+        const current = currentGatewaySession(sessions, currentRequest);
+        if (
+          current.sessionId !== session.sessionId ||
+          current.walletPublicKey !== session.walletPublicKey ||
+          current.network !== session.network
+        ) throw new Error("AUTHENTICATED_DEVNET_SESSION_REQUIRED");
+        return { report: serializeReport(report) };
+      });
     },
 
     stage: (request: Request) => {

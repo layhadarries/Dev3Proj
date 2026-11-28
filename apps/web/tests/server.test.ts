@@ -1,5 +1,5 @@
 import { createPrivateKey, randomUUID, sign } from "node:crypto";
-import { Keypair, Message, VersionedTransaction } from "@solana/web3.js";
+import { Keypair, Message, PublicKey, SystemProgram, Transaction, VersionedTransaction } from "@solana/web3.js";
 import type { RpcClient } from "@solguard/security";
 import bs58 from "bs58";
 import { describe, expect, it, vi } from "vitest";
@@ -846,6 +846,206 @@ describe("request boundaries", () => {
         else process.env.SOLGUARD_MAX_SPEND_LAMPORTS = previous;
       }
     }
+  });
+});
+
+describe("external transaction analysis", () => {
+  function unsignedTransfer(payer: Keypair, recipient: string, lamports = 8) {
+    const transaction = new Transaction({
+      feePayer: payer.publicKey,
+      recentBlockhash: Keypair.generate().publicKey.toBase58(),
+    }).add(SystemProgram.transfer({
+      fromPubkey: payer.publicKey,
+      toPubkey: new PublicKey(recipient),
+      lamports,
+    }));
+    return Buffer.concat([
+      Buffer.from([1]),
+      Buffer.alloc(64),
+      transaction.serializeMessage(),
+    ]);
+  }
+
+  it("requires a live wallet session before decoding or making RPC calls", async () => {
+    const rpc = verificationRpc(8n);
+    const identity = vi.spyOn(rpc, "identity");
+    const app = handlers({ rpc });
+    const payer = Keypair.generate();
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const response = await app.analyze(request("analyze", {
+      recipient,
+      amountBaseUnits: "8",
+      transactionBase64: unsignedTransfer(payer, recipient).toString("base64"),
+    }));
+    expect(response.status).toBe(401);
+    expect(identity).not.toHaveBeenCalled();
+  });
+
+  it("does not return analysis evidence after the authenticated session is rotated during RPC", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const payer = Keypair.generate();
+      const recipient = Keypair.generate().publicKey.toBase58();
+      const simulation = deferredCall();
+      const rpc = verificationRpc(8n, { beforeSimulate: simulation.wait });
+      const app = handlers({ rpc });
+      const first = await signIn(app, payer);
+      const pending = app.analyze(request("analyze", {
+        recipient,
+        amountBaseUnits: "8",
+        transactionBase64: unsignedTransfer(payer, recipient).toString("base64"),
+      }, { cookie: first.cookie }));
+      await simulation.entered;
+      await signIn(app, payer, { cookie: first.cookie });
+      simulation.release();
+      const response = await pending;
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: "Confirmation is missing or no longer valid. Start again.",
+      });
+    });
+  });
+
+  it("analyzes a canonical unsigned transfer against the session wallet without signing or submitting", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const payer = Keypair.generate();
+      const recipient = Keypair.generate().publicKey.toBase58();
+      const rpc = verificationRpc(8n);
+      const identity = vi.spyOn(rpc, "identity");
+      const fee = vi.spyOn(rpc, "fee");
+      const simulate = vi.spyOn(rpc, "simulate");
+      const fresh = vi.spyOn(rpc, "fresh");
+      const submit = vi.fn(async () => "must-not-submit");
+      const app = handlers({ rpc, submit });
+      const session = await signIn(app, payer);
+      const wire = unsignedTransfer(payer, recipient);
+      const response = await app.analyze(request("analyze", {
+        recipient,
+        amountBaseUnits: "8",
+        transactionBase64: wire.toString("base64"),
+      }, { cookie: session.cookie }));
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.report).toMatchObject({
+        verdict: "PASS",
+        findings: [],
+        feeLamports: "5001",
+        simulation: { deltas: expect.arrayContaining([
+          { account: payer.publicKey.toBase58(), lamportsDelta: "-5009" },
+          { account: recipient, lamportsDelta: "8" },
+        ]) },
+      });
+      expect(body.report.messageHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(identity).toHaveBeenCalledTimes(1);
+      expect(fee).toHaveBeenCalledTimes(1);
+      expect(simulate).toHaveBeenCalledTimes(1);
+      expect(fresh).toHaveBeenCalledTimes(1);
+      expect(submit).not.toHaveBeenCalled();
+    });
+  });
+
+  it("blocks a mismatched external transaction before simulation", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const payer = Keypair.generate();
+      const actualRecipient = Keypair.generate().publicKey.toBase58();
+      const claimedRecipient = Keypair.generate().publicKey.toBase58();
+      const rpc = verificationRpc(8n);
+      const simulate = vi.spyOn(rpc, "simulate");
+      const app = handlers({ rpc });
+      const session = await signIn(app, payer);
+      const response = await app.analyze(request("analyze", {
+        recipient: claimedRecipient,
+        amountBaseUnits: "8",
+        transactionBase64: unsignedTransfer(payer, actualRecipient).toString("base64"),
+      }, { cookie: session.cookie }));
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.report.verdict).toBe("BLOCK");
+      expect(body.report.findings[0].ruleId).toBe("RECIPIENT_MISMATCH");
+      expect(body.report.simulation).toBeNull();
+      expect(simulate).not.toHaveBeenCalled();
+
+      const wrongAmount = await app.analyze(request("analyze", {
+        recipient: actualRecipient,
+        amountBaseUnits: "9",
+        transactionBase64: unsignedTransfer(payer, actualRecipient).toString("base64"),
+      }, { cookie: session.cookie }));
+      const wrongAmountBody = await wrongAmount.json();
+      expect(wrongAmount.status).toBe(200);
+      expect(wrongAmountBody.report.verdict).toBe("BLOCK");
+      expect(wrongAmountBody.report.findings[0].ruleId).toBe("AMOUNT_MISMATCH");
+      expect(wrongAmountBody.report.simulation).toBeNull();
+      expect(simulate).not.toHaveBeenCalled();
+    });
+  });
+
+  it("binds the analyzed transaction payer to the authenticated wallet and rejects self-transfers", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const payer = Keypair.generate();
+      const otherPayer = Keypair.generate();
+      const recipient = Keypair.generate().publicKey.toBase58();
+      const rpc = verificationRpc(8n);
+      const simulate = vi.spyOn(rpc, "simulate");
+      const app = handlers({ rpc });
+      const session = await signIn(app, payer);
+      const foreign = await app.analyze(request("analyze", {
+        recipient,
+        amountBaseUnits: "8",
+        transactionBase64: unsignedTransfer(otherPayer, recipient).toString("base64"),
+      }, { cookie: session.cookie }));
+      const foreignBody = await foreign.json();
+      expect(foreign.status).toBe(200);
+      expect(foreignBody.report.verdict).toBe("BLOCK");
+      expect(foreignBody.report.findings[0].ruleId).toBe("PAYER_MISMATCH");
+      expect(foreignBody.report.simulation).toBeNull();
+      expect(simulate).not.toHaveBeenCalled();
+
+      const self = await app.analyze(request("analyze", {
+        recipient: payer.publicKey.toBase58(),
+        amountBaseUnits: "8",
+        transactionBase64: unsignedTransfer(payer, payer.publicKey.toBase58()).toString("base64"),
+      }, { cookie: session.cookie }));
+      expect(self.status).toBe(400);
+      expect(simulate).not.toHaveBeenCalled();
+    });
+  });
+
+  it("fails closed for non-canonical base64 and signed or multi-signer wire data", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const payer = Keypair.generate();
+      const recipient = Keypair.generate().publicKey.toBase58();
+      const rpc = verificationRpc(8n);
+      const app = handlers({ rpc });
+      const session = await signIn(app, payer);
+      const invalid = await app.analyze(request("analyze", {
+        recipient, amountBaseUnits: "8", transactionBase64: "%%%=",
+      }, { cookie: session.cookie }));
+      expect(invalid.status).toBe(400);
+
+      const signed = unsignedTransfer(payer, recipient);
+      signed[1] = 1;
+      const blocked = await app.analyze(request("analyze", {
+        recipient, amountBaseUnits: "8", transactionBase64: signed.toString("base64"),
+      }, { cookie: session.cookie }));
+      const body = await blocked.json();
+      expect(blocked.status).toBe(200);
+      expect(body.report.verdict).toBe("BLOCK");
+      expect(body.report.findings[0].ruleId).toBe("UNDECODABLE_MESSAGE");
+      expect(body.report.simulation).toBeNull();
+
+      const multiSigner = Buffer.concat([
+        Buffer.from([2]),
+        Buffer.alloc(128),
+        signed.subarray(65),
+      ]);
+      const multi = await app.analyze(request("analyze", {
+        recipient, amountBaseUnits: "8", transactionBase64: multiSigner.toString("base64"),
+      }, { cookie: session.cookie }));
+      const multiBody = await multi.json();
+      expect(multi.status).toBe(200);
+      expect(multiBody.report.verdict).toBe("BLOCK");
+      expect(multiBody.report.findings[0].ruleId).toBe("UNDECODABLE_MESSAGE");
+      expect(multiBody.report.simulation).toBeNull();
+    });
   });
 });
 
