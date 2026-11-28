@@ -881,6 +881,30 @@ describe("external transaction analysis", () => {
     expect(identity).not.toHaveBeenCalled();
   });
 
+  it("does not return analysis evidence after the authenticated session is rotated during RPC", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const payer = Keypair.generate();
+      const recipient = Keypair.generate().publicKey.toBase58();
+      const simulation = deferredCall();
+      const rpc = verificationRpc(8n, { beforeSimulate: simulation.wait });
+      const app = handlers({ rpc });
+      const first = await signIn(app, payer);
+      const pending = app.analyze(request("analyze", {
+        recipient,
+        amountBaseUnits: "8",
+        transactionBase64: unsignedTransfer(payer, recipient).toString("base64"),
+      }, { cookie: first.cookie }));
+      await simulation.entered;
+      await signIn(app, payer, { cookie: first.cookie });
+      simulation.release();
+      const response = await pending;
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: "Confirmation is missing or no longer valid. Start again.",
+      });
+    });
+  });
+
   it("analyzes a canonical unsigned transfer against the session wallet without signing or submitting", async () => {
     await withSpendLimit("1000000000", async () => {
       const payer = Keypair.generate();
