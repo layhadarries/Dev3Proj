@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 
 export const MAX_BODY_BYTES = 32 * 1024;
+export const BODY_READ_TIMEOUT_MS = 10_000;
 const WINDOW_MS = 60_000;
 const MAX_RATE_LIMIT_KEY_LENGTH = 256;
 const MAX_RECLAIM_PER_REQUEST = 32;
@@ -184,23 +185,48 @@ export async function readJson<T>(
     if (Number(contentLength) > MAX_BODY_BYTES) throw new HttpError(413, "Request body is too large");
   }
 
-  const chunks: Uint8Array[] = [];
-  let size = 0;
   try {
     const reader = request.body?.getReader();
-    if (reader) {
+    if (!reader) throw new HttpError(400, "Invalid request");
+
+    // A fixed-size buffer also bounds per-chunk bookkeeping for fragmented bodies.
+    const body = Buffer.alloc(MAX_BODY_BYTES);
+    let size = 0;
+    let complete = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = performance.now() + BODY_READ_TIMEOUT_MS;
+    const timeoutError = () => new HttpError(408, "Request body timed out");
+    const readBody = async (): Promise<void> => {
       for (;;) {
         const { value, done } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > MAX_BODY_BYTES) {
-          await reader.cancel().catch(() => undefined);
+        if (performance.now() >= deadline) throw timeoutError();
+        if (done) return;
+        if (value.byteLength > MAX_BODY_BYTES - size) {
           throw new HttpError(413, "Request body is too large");
         }
-        chunks.push(value);
+        body.set(value, size);
+        size += value.byteLength;
       }
+    };
+
+    try {
+      await Promise.race([
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(timeoutError()), BODY_READ_TIMEOUT_MS);
+        }),
+        readBody(),
+      ]);
+      complete = true;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      // Cancellation can itself stall; never await it on the error path.
+      if (!complete) void reader.cancel().catch(() => undefined);
+      reader.releaseLock();
     }
-    const input: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+
+    const decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+      .decode(body.subarray(0, size));
+    const input: unknown = JSON.parse(decoded);
     return parse(input);
   } catch (error) {
     if (error instanceof HttpError) throw error;
