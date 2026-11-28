@@ -22,6 +22,14 @@ jobs:
       - run: pnpm build && pnpm typecheck && pnpm lint && pnpm test
       - name: Run transaction security regression tests
         run: pnpm --filter @solguard/web exec vitest run tests/flow.test.ts tests/receipts.test.ts tests/http.test.ts tests/server.test.ts
+      - name: Install Chromium for mock-wallet regression
+        run: pnpm --filter @solguard/web exec playwright install --with-deps chromium
+      - name: Run mock-wallet browser regression
+        run: pnpm --filter @solguard/web browser:sg01
+      - name: Record dependency advisory details
+        run: |
+          pnpm audit --json > "$RUNNER_TEMP/solguard-audit.json" || true
+          node -e 'const fs=require("node:fs");const r=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/solguard-audit.json","utf8")); if (!r.advisories || !r.metadata) throw Error("Audit report unavailable"); for(const a of Object.values(r.advisories)) console.log(JSON.stringify({module:a.module_name,severity:a.severity,url:a.url,vulnerable:a.vulnerable_versions,patched:a.patched_versions,paths:a.findings?.flatMap(f=>f.paths??[])}));'
       - run: pnpm audit --audit-level high
   secrets:
     runs-on: ubuntu-latest
