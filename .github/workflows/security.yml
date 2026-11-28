@@ -23,6 +23,8 @@ jobs:
       - run: pnpm build && pnpm typecheck && pnpm lint && pnpm test
       - name: Run transaction security regression tests
         run: pnpm --filter @solguard/web exec vitest run tests/flow.test.ts tests/receipts.test.ts tests/http.test.ts tests/server.test.ts
+      - name: Verify HTTPS smoke-check harness (synthetic responses only)
+        run: node --test scripts/verify-https.test.mjs
       - name: Record dependency advisory details
         run: |
           pnpm audit --json > "$RUNNER_TEMP/solguard-audit.json" || true
