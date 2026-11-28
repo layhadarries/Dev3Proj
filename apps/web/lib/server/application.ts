@@ -595,7 +595,7 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
         concurrencyGroup: "analyze",
         concurrencyLimit: 2,
         walletConcurrencyLimit: 1,
-      }, async (input, session) => {
+      }, async (input, session, _origin, currentRequest) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
         if (input.recipient === session.walletPublicKey) {
           throw new HttpError(400, "Recipient must differ from the connected wallet");
@@ -620,6 +620,12 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
           network: session.network,
           maxSpendLamports: spendLimit,
         });
+        const current = currentGatewaySession(sessions, currentRequest);
+        if (
+          current.sessionId !== session.sessionId ||
+          current.walletPublicKey !== session.walletPublicKey ||
+          current.network !== session.network
+        ) throw new Error("AUTHENTICATED_DEVNET_SESSION_REQUIRED");
         return { report: serializeReport(report) };
       });
     },
