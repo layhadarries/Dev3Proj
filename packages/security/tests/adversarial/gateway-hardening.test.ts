@@ -128,11 +128,17 @@ it("rejects expiry arithmetic equal to the current wall or monotonic instant", (
   const f=fixture();
   f.setTime(f.expiresAt);
   expect(()=>f.gate.confirm(f.resolve,f.card.id)).toThrow(/CONFIRMATION_EXPIRED/);
-  const g=fixture();
-  const staged=performance.now.bind(performance)();
-  const spy=vi.spyOn(performance,"now").mockReturnValue(staged+APPROVAL_TTL_MS);
-  expect(()=>g.gate.confirm(g.resolve,g.card.id)).toThrow(/CONFIRMATION_EXPIRED/);
-  spy.mockRestore();
+  const monotonicStart=performance.now();
+  const spy=vi.spyOn(performance,"now")
+    .mockReturnValueOnce(monotonicStart)
+    .mockReturnValueOnce(monotonicStart+APPROVAL_TTL_MS);
+  try {
+    const g=fixture();
+    // Wall time remains at 100, below expiry; only the exact monotonic boundary rejects.
+    expect(()=>g.gate.confirm(g.resolve,g.card.id)).toThrow(/CONFIRMATION_EXPIRED/);
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 it("confirms immediately before wall expiry and updates all confirmation fields", () => {
