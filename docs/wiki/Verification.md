@@ -2,21 +2,19 @@
 
 ## Current evidence
 
-The current source of truth is the merged main commit:
+The recorded baseline is the merged `main` commit below.
 
 - Commit: 74cb7e6396b0f034971d07c2519729d1e27db209
 - Latest successful main workflow: run 46054922795
-- Open pull requests at the last repository review: none
 
 The workflow runs:
 
 - Workspace build, typecheck, lint and tests
-- Dedicated transaction-security regression tests
 - High-severity dependency audit gate
 - Secret scanning
 - Devnet integration checks on pushes to main
 
-The dedicated regression coverage exercises the existing deterministic tests for:
+[PR #5](https://github.com/layhadarries/Dev3Proj/pull/5) proposes a dedicated CI step for existing deterministic transaction-security tests. Until merged, that step is not part of the recorded main workflow. Its coverage includes:
 
 - Exact transaction and signed-receipt matching
 - Invalid, missing and mismatched receipt handling
@@ -33,6 +31,22 @@ The dedicated regression coverage exercises the existing deterministic tests for
 - Real browser-wallet smoke testing, including rejection, reload recovery and sign-out through the deployed application, remains separate verification work.
 - No Mainnet or real-fund test has been performed.
 - The dependency workflow gates high-severity findings. Moderate advisories require individual assessment and are not, by themselves, proof that the application is exploitable.
+
+## Deployed HTTPS security smoke test (pending)
+
+Use a disposable Devnet wallet funded only with test SOL. Record the deployed URL, deployed commit, date, browser/wallet versions, result for each case, and Devnet Explorer signature for a confirmed transfer. Do not record cookies, wallet secrets, or API keys.
+
+| Check | Expected result |
+| --- | --- |
+| Connect and approve sign-in | Session is established for the connected wallet; HTTPS session cookie is Secure, HttpOnly and SameSite=Strict. |
+| Reject sign-in or wallet signature | No transaction is broadcast; the user can safely restart. |
+| Confirm a small valid SOL transfer | Recipient, amount, fee and Devnet match the approved intent; wallet signs only after verification. |
+| Complete the transfer | Receipt matches the signed transaction and Explorer confirms the same signature on Devnet. |
+| Cancel or let approval expire | No submission occurs; a fresh confirmation is required. |
+| Reload during a pending or unknown submission (if safely reproducible) | The prior signature is recoverable; no automatic resubmission or false success. Check Explorer before starting another transfer. |
+| Sign out | The prior session no longer authorizes protected requests. |
+
+Mark cases that cannot be reproduced as not tested, not passed. Record UI defects separately for the frontend owner. This checklist is a test plan, not evidence of a completed browser or deployment test.
 
 ## Scope
 
