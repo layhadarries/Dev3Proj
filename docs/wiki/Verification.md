@@ -52,6 +52,14 @@ PR #5 run 46143168135 passed all three mock-wallet Chromium scenarios (empty, mi
 
 ## Deployed HTTPS security smoke test (pending)
 
+PR #5 adds a credential-free ingress harness. After it is merged, run it against the owner-authorized Devnet deployment (use the canonical origin, not a URL with a path):
+
+```sh
+node scripts/verify-https.mjs https://YOUR-AUTHORIZED-DEVNET-ORIGIN
+```
+
+It checks production CSP and nonce refresh, HSTS, other browser security headers, unauthenticated and cross-origin refusal, and unknown-route handling using seven bounded requests. It sends no credentials, wallet keys, valid intents or signed transactions, follows no redirects and does not print response bodies. The harness is tested against synthetic responses in CI. This is not a live wallet test; the deployed URL and exact deployed commit must still be recorded separately.
+
 Use a disposable Devnet wallet funded only with test SOL. Record the deployed URL, deployed commit, date, browser/wallet versions, result for each case, and Devnet Explorer signature for a confirmed transfer. Do not record cookies, wallet secrets, or API keys.
 
 | Check | Expected result |
