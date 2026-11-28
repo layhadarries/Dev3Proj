@@ -9,32 +9,12 @@ import { SessionStore } from "../lib/server/sessions";
 
 const origin = "http://localhost:3000";
 const ED25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
-const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-function base58Encode(bytes: Uint8Array): string {
-  const encoded: number[] = [0];
-  for (const byte of bytes) {
-    let carry = byte;
-    for (let index = 0; index < encoded.length; index += 1) {
-      const value = (encoded[index] ?? 0) * 256 + carry;
-      encoded[index] = value % 58;
-      carry = Math.floor(value / 58);
-    }
-    while (carry > 0) {
-      encoded.push(carry % 58);
-      carry = Math.floor(carry / 58);
-    }
-  }
-  let leadingZeroes = 0;
-  while (leadingZeroes < bytes.length && bytes[leadingZeroes] === 0) leadingZeroes += 1;
-  return "1".repeat(leadingZeroes) + encoded.reverse().map((digit) => BASE58_ALPHABET[digit]).join("");
-}
 
 function expectedSignature(signedBytes: Uint8Array): string {
   const transaction = VersionedTransaction.deserialize(Buffer.from(signedBytes));
   const signature = transaction.signatures[0];
   if (!signature) throw new Error("Missing transaction signature");
-  return base58Encode(signature);
+  return bs58.encode(signature);
 }
 
 function request(route: string, body: unknown, options: {
