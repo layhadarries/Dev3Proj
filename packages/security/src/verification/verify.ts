@@ -51,7 +51,7 @@ const approvals = new WeakMap<object, Approval>();
 const confirmedSol = IntentSchema.safeExtend({
   asset: z.object({ type: z.literal("SOL") }).strict(),
   amountBaseUnits: z.bigint().positive().max(0xffffffffffffffffn),
-  confirmedAt: z.number().int().safe().nonnegative(),
+  confirmedAt: z.number().int().safe().positive(),
 }).strict();
 /** Strict untrusted JSON boundary. Reject extra fields rather than silently dropping constraints. */
 export function parseConfirmedSolIntent(input: unknown): Intent {
@@ -149,6 +149,8 @@ export async function verify(
     report.decodedInstructions = message.decoded;
     if (input?.asset?.type === "SPL")
       reject("ASSET_MISMATCH", "Only confirmed SOL intents are supported.");
+    if (input?.confirmedAt === 0)
+      reject("TX_MODIFIED", "Intent has not been confirmed.");
     const parsed = confirmedSol.safeParse(input);
     if (!parsed.success)
       return reject("INTERNAL_ERROR", "Invalid confirmed intent.");
