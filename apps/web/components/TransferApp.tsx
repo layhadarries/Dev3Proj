@@ -9,6 +9,7 @@ import {
 import { lamportsToSol } from "../lib/client/format";
 import { browserStorage, clearReceipt, loadReceipt, saveReceipt } from "../lib/client/receipts";
 import { findWallet, type WalletProvider } from "../lib/client/wallet";
+import { Analyzer } from "./Analyzer";
 
 type Step =
   | { name: "ask"; note?: string }
@@ -375,6 +376,20 @@ export function TransferApp() {
 
       {busy && <p className="status-banner busy" role="status">{busy}…</p>}
       {error && <section className="card error" role="alert">{error}</section>}
+
+      {/* Keyed by wallet, so that one wallet's input and results are never shown to another. */}
+      {address && (
+        <Analyzer
+          key={address}
+          api={api}
+          address={address}
+          onSessionEnd={() => {
+            // An open review cannot be signed without a session, so close it too.
+            reset("Your session ended. Connect again.");
+            setAddress(undefined);
+          }}
+        />
+      )}
     </main>
   );
 }
