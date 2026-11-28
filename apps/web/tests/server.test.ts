@@ -1,5 +1,5 @@
 import { createPrivateKey, randomUUID, sign } from "node:crypto";
-import { Keypair, Message, SystemProgram, Transaction, VersionedTransaction } from "@solana/web3.js";
+import { Keypair, Message, PublicKey, SystemProgram, Transaction, VersionedTransaction } from "@solana/web3.js";
 import type { RpcClient } from "@solguard/security";
 import bs58 from "bs58";
 import { describe, expect, it, vi } from "vitest";
@@ -856,7 +856,7 @@ describe("external transaction analysis", () => {
       recentBlockhash: Keypair.generate().publicKey.toBase58(),
     }).add(SystemProgram.transfer({
       fromPubkey: payer.publicKey,
-      toPubkey: recipient,
+      toPubkey: new PublicKey(recipient),
       lamports,
     }));
     return Buffer.concat([
