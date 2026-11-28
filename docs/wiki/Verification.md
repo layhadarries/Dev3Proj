@@ -63,12 +63,16 @@ The security engine's RPC client uses lossless-json, not the SDK transport; the 
 PR #5 run 46143168135 passed all three mock-wallet Chromium scenarios (empty, mismatched and matching receipt), each with one submit. This is separate from V8 coverage and live extension testing; the browser script intercepts API calls. The HTTP and server tests cover route dispatch, origin, authentication, quotas and transaction outcomes; the security-header tests cover CSP, HSTS and nonce forwarding. Full rendered React component line/branch coverage remains unmeasured. Ethan's agent separately reported successful combined-branch tests on the earlier PR revisions in [Issue #2](https://github.com/layhadarries/Dev3Proj/issues/2#issuecomment-7238875337); those are teammate-reported, not independently rerun results for the final integrated commit.
 
 
-## Deployed HTTPS security smoke test (awaiting deployment)
+## Deployed HTTPS security smoke test
 
-The credential-free ingress harness is present and its synthetic regression suite passes, but an authorized deployment URL is not available. No owner-authorized deployed origin has been established in the recorded evidence; deployment records alone do not establish a reachable application URL. Await an owner-provided canonical origin; do not use the example origin below as a target. Then run:
+On 28 November 2026 the harness ran against https://solguard-zettabyte.onrender.com (`main` commit `3c1bfec`) and
+passed 25 of 25 checks. Page load, the theme button, the no-wallet message and a
+360 px wide layout were also checked in headless Chromium. Wallet sign-in, the
+analyzer, signing and submission have **not** been tested on the deployment. To
+repeat the harness:
 
 ```sh
-node scripts/verify-https.mjs https://OWNER-PROVIDED-ORIGIN
+node scripts/verify-https.mjs https://solguard-zettabyte.onrender.com
 ```
 
 It checks production CSP and nonce refresh, HSTS, other browser security headers, unauthenticated and cross-origin refusal, and unknown-route handling using seven bounded requests. It sends no credentials, wallet keys, valid intents or signed transactions, follows no redirects and does not print response bodies. The harness is tested against synthetic responses in CI. This is not a live wallet test; the deployed URL and exact deployed commit must still be recorded separately.
