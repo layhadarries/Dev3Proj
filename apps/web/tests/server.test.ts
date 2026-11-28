@@ -151,9 +151,9 @@ async function submitPreparedTransaction(
     const owner = Keypair.generate();
     const recipient = Keypair.generate().publicKey;
     let submittedBytes: Uint8Array | undefined;
-    const submit = vi.fn(async (bytes: Uint8Array) => {
+    const submit = vi.fn(async (bytes: Uint8Array, signal: AbortSignal) => {
       submittedBytes = Buffer.from(bytes);
-      if (options.submit) return options.submit(bytes);
+      if (options.submit) return options.submit(bytes, signal);
       else {
         submittedBytes = Buffer.from(bytes);
         return expectedSignature(bytes);
@@ -264,6 +264,58 @@ describe("SDK submission transport", () => {
       expect(sends).toEqual([result.signedBase64]);
     });
   }
+
+  it("aborts the SDK HTTP request at the broadcast deadline and reconciles without resending", async () => {
+    let time = 1_000;
+    let observedSignal: AbortSignal | null | undefined;
+    const transport = vi.fn<NonNullable<Parameters<typeof createDevnetSubmissionTransport>[0]>>(
+      async (_input, init) => {
+        observedSignal = init?.signal;
+        if (!observedSignal) throw new Error("Expected a per-submission abort signal");
+        const signal = observedSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          const abort = () => reject(new Error("HTTP request aborted"));
+          if (signal.aborted) abort();
+          else signal.addEventListener("abort", abort, { once: true });
+        });
+      },
+    );
+    const getSignatureStatus = vi.fn<NonNullable<ApplicationDependencies["getSignatureStatus"]>>(async () => null);
+    const result = await submitPreparedTransaction({
+      submit: createDevnetSubmissionTransport(transport),
+      getSignatureStatus,
+      broadcastTimeoutMs: 20,
+      confirmationTimeoutMs: 1_000,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    });
+    expect(observedSignal?.aborted).toBe(true);
+    expect(result.response.status).toBe(504);
+    expect((await result.response.json()).error).toMatch(/unconfirmed.*broadcast timed out.*Do not submit again/);
+    expect(getSignatureStatus).toHaveBeenCalledWith(expectedSignature(result.submittedBytes ?? new Uint8Array()));
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect((await result.retry()).status).toBe(409);
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps simultaneous SDK transport abort signals isolated", async () => {
+    const first = new AbortController();
+    const second = new AbortController();
+    const observed: (AbortSignal | null | undefined)[] = [];
+    const submit = createDevnetSubmissionTransport(async (_input, init) => {
+      observed.push(init?.signal);
+      if (typeof init?.body !== "string") throw new Error("Expected JSON-RPC body");
+      const rpc = JSON.parse(init.body);
+      return Response.json({ jsonrpc: "2.0", id: rpc.id, result: bs58.encode(new Uint8Array(64).fill(1)) });
+    });
+    await Promise.all([
+      submit(new Uint8Array([1]), first.signal),
+      submit(new Uint8Array([2]), second.signal),
+    ]);
+    expect(observed).toEqual([first.signal, second.signal]);
+    first.abort();
+    expect(second.signal.aborted).toBe(false);
+  });
 
   it("keeps an unreconciled HTTP 429 submission unknown without a second SDK send", async () => {
     let time = 1_000;
