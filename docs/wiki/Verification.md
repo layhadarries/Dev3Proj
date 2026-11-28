@@ -34,20 +34,21 @@ The workflow runs:
 
 ## Dependency advisory assessment (T-04, 28 November 2026)
 
-The successful PR #8 checks job (run 46140545994) reports four moderate advisories and passes the high-severity gate. It does not print advisory IDs. The lockfile on main retains `jayson@4.3.0`, `uuid@8.3.2`, and `stream-json@1.9.1`. The previous security review identifies the following candidate advisories; confirm the exact current IDs and paths from the detailed audit output proposed in PR #5 before closing T-04.
+The [successful PR #5 run 46143168135](https://github.com/layhadarries/Dev3Proj/actions/runs/46143168135) at commit `9ac4230` confirms exactly four moderate advisories; the high-severity audit gate passes. All four dependency paths run through `@solana/web3.js > jayson` in the web, security and agent workspaces. The main lockfile retains `jayson@4.3.0`, `uuid@8.3.2`, and `stream-json@1.9.1`.
 
-| Advisory | Relevant behavior | Preliminary assessment |
-| --- | --- | --- |
-| [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | UUID v3/v5/v6 output-buffer bounds | No application use of those methods with caller-supplied buffers has been established. |
-| [GHSA-528h-pc64-c93x](https://github.com/advisories/GHSA-528h-pc64-c93x) | Streaming path-filter CPU exhaustion | Firewall RPC uses lossless-json rather than the SDK transport; assess SDK dependency reachability separately. |
-| [GHSA-hqr4-qq8f-hg3x](https://github.com/advisories/GHSA-hqr4-qq8f-hg3x) | JSONC comment parsing CPU exhaustion | No application use of JSONC entry points has been established. |
-| [GHSA-mjw6-4jj6-33hc](https://github.com/advisories/GHSA-mjw6-4jj6-33hc) | Previously reported stream-json advisory | Exact advisory details and current dependency path still need confirmation. |
+| Advisory | Installed | Reported patched range | Assessment |
+| --- | --- | --- | --- |
+| [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | uuid 8.3.2 | >=11.1.1 | No application use of affected UUID methods with caller-supplied buffers has been established. |
+| [GHSA-528h-pc64-c93x](https://github.com/advisories/GHSA-528h-pc64-c93x) | stream-json 1.9.1 | >=3.5.0 | Transitive SDK dependency; reachability through the SDK requires separate assessment. |
+| [GHSA-hqr4-qq8f-hg3x](https://github.com/advisories/GHSA-hqr4-qq8f-hg3x) | stream-json 1.9.1 | >=3.6.0 | Same dependency path; no application use of JSONC entry points has been established. |
+| [GHSA-mjw6-4jj6-33hc](https://github.com/advisories/GHSA-mjw6-4jj6-33hc) | stream-json 1.9.1 | >=3.6.0 | Same dependency path; application exploitability has not been established. |
 
-These are preliminary reachability observations, not exemptions, proof of non-exploitability, or a clean audit. Do not force incompatible transitive major-version overrides during the demo freeze. Track compatible upstream fixes, review the SDK response path, and rerun frozen-lockfile installation, build, tests and audit after any coordinated dependency change.
+The security engine's RPC client uses lossless-json, not the SDK transport; the web application does use the SDK for submission and confirmation. The dependency audit therefore cannot be dismissed simply because the firewall uses a different parser. These are preliminary reachability observations, not exemptions, proof of non-exploitability, or a clean audit. Defer incompatible transitive major-version overrides until coordinated compatibility testing; track upstream fixes and rerun frozen-lockfile installation, build, tests and audit after any dependency change.
 
 ## Browser and route coverage (T-05)
 
-PR #5 now proposes running the existing Playwright mock-wallet browser script in CI, including matching, missing and mismatched receipt scenarios. This is separate from V8 unit-test coverage and from a live wallet extension. The script intercepts API requests, so it does not demonstrate real server ingress or blockchain behavior. The existing HTTP and server tests exercise route dispatch, origin, authentication, quotas and transaction outcomes; the security-header tests exercise CSP, HSTS and nonce forwarding. No fresh component line/branch percentage is claimed. Full rendered React component coverage and a rerun on the integrated UI revision remain outstanding.
+PR #5 run 46143168135 passed all three mock-wallet Chromium scenarios (empty, mismatched and matching receipt), each with one submit. This is separate from V8 coverage and live extension testing; the browser script intercepts API calls. The HTTP and server tests cover route dispatch, origin, authentication, quotas and transaction outcomes; the security-header tests cover CSP, HSTS and nonce forwarding. Full rendered React component line/branch coverage remains unmeasured. Ethan's agent separately reported successful combined-branch tests on the earlier PR revisions in [Issue #2](https://github.com/layhadarries/Dev3Proj/issues/2#issuecomment-7238875337); those are teammate-reported, not independently rerun results for the final integrated commit.
+
 
 ## Deployed HTTPS security smoke test (pending)
 
