@@ -477,7 +477,7 @@ This does not claim independent browser or production-provider verification.
 
 ## Final security demonstration — 2026-11-29
 
-**Merged baseline:** `origin/main` at `3c1bfec622759b7e3eb92253e601fe6645bf198b`.
+**Merged baseline:** `main` at `3c1bfec622759b7e3eb92253e601fe6645bf198b`.
 **PR #15 evidence head:** `40ec32928b5f8b98457837aae0c2ce41d75758d2`, with
 the Tazio-owned demo-evidence changes based on commit
 `5fff4038d66f35633b79e23e6c5b4bad66826d1f`.
@@ -519,9 +519,10 @@ Devnet blockhash and performs RPC identity, fee, simulation, and freshness
 reads when a scenario reaches those stages. The new-recipient address does not
 depend on or expose a known private key. In the transaction-tampering scenario,
 the unmodified unsigned bytes first pass live verification and simulation and
-an unsigned handoff is prepared; the local wire bytes are then mutated and the
-final signed-wire verification returns `TX_MODIFIED`. Thus the final BLOCK
-report has no simulation attached, but an earlier live simulation did occur.
+an unsigned handoff is prepared; the local wire bytes are then mutated and
+`verifySigned` rejects them as `TX_MODIFIED`. No wallet signature is created.
+Thus the final BLOCK report has no simulation attached, but an earlier live
+simulation did occur.
 No private signing key is used. Controlled wire mutation is local test data
 only. These scenarios do not load a key, request wallet approval, sign with a
 wallet, call a submission transport, broadcast, or submit a transaction. They are live
@@ -551,6 +552,14 @@ results elsewhere in this report are identified as such and are not independent
 results from this run. PR #15's GitHub workflow includes a mock-wallet browser
 regression, not a real extension or live submission.
 
+The 387-test totals and live-demo results above are independently executed
+results in the PR #15 worktree. Run 46152422986 independently confirms the
+387 suite counts at the earlier PR head; its Devnet job was skipped. It also
+ran the mock-wallet browser regression, which is CI/mock evidence rather than
+real extension testing. Browser and live-transfer results attributed elsewhere
+in this report to Ethan's agent remain teammate-reported and are not relabeled
+as independently repeated here.
+
 ## Manual real-wallet release verification checklist
 
 This is a human-run plan, not completed evidence. Use only a disposable
@@ -558,9 +567,15 @@ Devnet-funded test wallet. Never provide or export its seed phrase/private key
 to the application or this report. Do not proceed with any transaction until
 Tazio explicitly authorizes that specific Devnet test submission.
 
-1. Start the production build locally using the commands and environment
-   variables in `docs/wiki/Deployment.md`. Set `APP_ORIGIN` to the exact
-   local HTTPS origin and use only Devnet RPC configuration.
+1. From the repository root, run `pnpm install --frozen-lockfile && pnpm build`,
+   then start the built Next app with `cd apps/web && pnpm start` (defaults to
+   port 3000). Set `APP_ORIGIN` to the exact origin used in the browser, e.g.
+   `https://localhost:3000` only when a trusted local HTTPS terminator is
+   configured; plain `http://localhost:3000` is development-only and cannot
+   verify Secure-cookie/HSTS behavior. The application RPC is pinned to
+   `https://api.devnet.solana.com`; the optional spend setting is
+   `SOLGUARD_MAX_SPEND_LAMPORTS` (default 1 SOL in lamports). Do not add
+   credentials to command history.
 2. Install/open Phantom (or another supported wallet extension), switch it to
    Solana Devnet, and verify the selected account is the disposable test wallet.
 3. Connect and authenticate. Reject the wallet signature once; confirm no
