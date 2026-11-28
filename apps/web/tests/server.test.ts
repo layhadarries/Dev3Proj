@@ -939,6 +939,18 @@ describe("external transaction analysis", () => {
       expect(body.report.findings[0].ruleId).toBe("RECIPIENT_MISMATCH");
       expect(body.report.simulation).toBeNull();
       expect(simulate).not.toHaveBeenCalled();
+
+      const wrongAmount = await app.analyze(request("analyze", {
+        recipient: actualRecipient,
+        amountBaseUnits: "9",
+        transactionBase64: unsignedTransfer(payer, actualRecipient).toString("base64"),
+      }, { cookie: session.cookie }));
+      const wrongAmountBody = await wrongAmount.json();
+      expect(wrongAmount.status).toBe(200);
+      expect(wrongAmountBody.report.verdict).toBe("BLOCK");
+      expect(wrongAmountBody.report.findings[0].ruleId).toBe("AMOUNT_MISMATCH");
+      expect(wrongAmountBody.report.simulation).toBeNull();
+      expect(simulate).not.toHaveBeenCalled();
     });
   });
 
@@ -995,6 +1007,20 @@ describe("external transaction analysis", () => {
       expect(body.report.verdict).toBe("BLOCK");
       expect(body.report.findings[0].ruleId).toBe("UNDECODABLE_MESSAGE");
       expect(body.report.simulation).toBeNull();
+
+      const multiSigner = Buffer.concat([
+        Buffer.from([2]),
+        Buffer.alloc(128),
+        signed.subarray(65),
+      ]);
+      const multi = await app.analyze(request("analyze", {
+        recipient, amountBaseUnits: "8", transactionBase64: multiSigner.toString("base64"),
+      }, { cookie: session.cookie }));
+      const multiBody = await multi.json();
+      expect(multi.status).toBe(200);
+      expect(multiBody.report.verdict).toBe("BLOCK");
+      expect(multiBody.report.findings[0].ruleId).toBe("UNDECODABLE_MESSAGE");
+      expect(multiBody.report.simulation).toBeNull();
     });
   });
 });
