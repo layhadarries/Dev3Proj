@@ -20,7 +20,7 @@ APP_ORIGIN=https://solguard.example
 SOLGUARD_MAX_SPEND_LAMPORTS=1000000000
 ```
 
-A demo runs at https://solguard-zettabyte.onrender.com on Render's free plan, deployed from
+A demo runs at https://solguard-zettabyte.onrender.com on Render's free plan, first deployed from
 `main` commit `3c1bfec` on 28 November 2026. It sleeps when idle and does not
 redeploy automatically. Build with
 `npx --yes pnpm@12.23.0 install --frozen-lockfile && npx --yes pnpm@12.23.0 build`,
