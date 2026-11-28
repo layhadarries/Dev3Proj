@@ -117,6 +117,7 @@ The endpoint policy is:
 | `/api/session` | 60/min | public 12/min; no claimed-wallet quota (wallet identity is unauthenticated until signature verification) | 120/min | — |
 | `/api/session/logout` | none | none; logout remains available | none | — |
 | `/api/parse` | 120/min per auth state | session 30/min; authenticated wallet 30/min | 60/min, authenticated only | AI/parse group 4, wallet 2; 16 total |
+| `/api/analyze` | 120/min per auth state | session/wallet 5/min | 30/min, authenticated only | analysis group 2, wallet 1; 16 total |
 | `/api/stage` | 120/min per auth state | session/wallet 20/min | 240/min, authenticated only | — |
 | `/api/confirm` | 120/min per auth state | session/wallet 12/min | 240/min, authenticated only | — |
 | `/api/build` | 120/min per auth state | session/wallet 8/min | 30/min, authenticated only | build group 4, wallet 2; 16 total |
@@ -166,6 +167,7 @@ server initialization. Request bodies and AI output cannot change this policy.
 | `POST /api/session` | `{ wallet, signature }` | `{ wallet }`, sets an HttpOnly, SameSite=Strict cookie |
 | `POST /api/session/logout` | `{}` | `{ ok: true }`, expires the current cookie |
 | `POST /api/parse` | `{ message }` | agent parse result |
+| `POST /api/analyze` | `{ recipient, amountBaseUnits, transactionBase64 }` | `{ report }` from independent unsigned-transaction verification |
 | `POST /api/stage` | `{ recipient, amountBaseUnits }` | server-owned confirmation card |
 | `POST /api/confirm` | `{ id }` | `{ intent }` |
 | `POST /api/build` | `{ confirmationId }` | `{ transaction, report }` |
@@ -173,6 +175,14 @@ server initialization. Request bodies and AI output cannot change this policy.
 | `POST /api/acknowledge` | `{ id }` | `{ ok: true }` |
 | `POST /api/handoff` | `{ id }` | `{ wire }` (base64 unsigned transaction) |
 | `POST /api/submit` | `{ id, signed }` | `{ signature }` |
+
+### External unsigned-transaction analysis
+
+`POST /api/analyze` is an authenticated, read-only analysis endpoint for an unsigned transaction supplied by another dApp. The request contains only the intended SOL recipient and positive decimal-string lamports amount plus canonical base64 transaction wire bytes. The payer is always taken from the authenticated wallet session; callers cannot supply or override it. The server creates a fresh analysis intent and timestamp, then runs the same fail-closed Devnet verifier and serializes its report.
+
+The wire format must contain exactly one zero-filled 64-byte signature slot and a canonical legacy message. Input is capped at 1,232 decoded bytes. Malformed/non-canonical base64 is rejected before RPC work. Unsupported, already-signed, multi-signer, versioned, token or otherwise undecodable transactions receive a BLOCK report or are rejected at the boundary; they are never signed, handed to a wallet, or submitted by this endpoint. A PASS/WARN report is display evidence only, not an approval capability and cannot be used with the confirmation gateway's handoff or submit phases. The current analyzer supports only the existing legacy single-signer SOL transfer policy on Devnet; it does not resolve address lookup tables or inspect SPL/Token-2022 effects.
+
+The endpoint is separately rate-limited to five requests per session/wallet per minute, 30 per process per minute, and two concurrent analyses overall (one per wallet). It consumes the same bounded JSON body limit and in-flight global cap as other expensive routes.
 
 Challenges use cryptographically random nonces and bind the wallet, exact
 application origin, timestamp and Solana Devnet environment. Challenge creation
