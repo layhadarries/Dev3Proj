@@ -1,6 +1,9 @@
 # Security architecture
 
-SolGuard uses defence in depth and server-owned authority.
+SolGuard uses defense in depth and server-owned authority. It is a Devnet-only
+MVP for legacy single-signer SOL transfers, not an audited or guaranteed
+protection product. See the integrated [security architecture](../SECURITY_ARCHITECTURE.md)
+for the detailed state machine and evidence boundaries.
 
 ## Guarantees implemented
 
@@ -14,6 +17,10 @@ SolGuard uses defence in depth and server-owned authority.
 - A 1 SOL default spending cap applies to transfer debit plus fees.
 - Invalid, missing or contradictory evidence fails closed.
 - Blocked transactions never reach wallet approval.
+- Only supported transaction instructions are accepted; the shared rule-ID
+  catalogue contains reserved IDs that do not correspond to implemented detectors.
+- Submission aborts the local HTTP request at its deadline, but cannot prove
+  that a remote RPC provider did not receive the transaction.
 
 ## External trust assumptions
 
@@ -22,3 +29,4 @@ SolGuard uses defence in depth and server-owned authority.
 - The host can observe and control process-local state.
 - The model provider is untrusted and has no tools or signing capability.
 - Confirmation UI copy and explicit gesture are application-level obligations.
+- Session, gateway, rate-limit and in-flight state are process-local.

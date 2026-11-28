@@ -1,5 +1,7 @@
 # Legacy SOL pipeline validation — 2026-11-27
 
+> **Historical record.** This report preserves evidence and test counts as recorded at the time; do not treat historical branch names, CI runs, or counts below as current main/PR state. The 29 November evidence distinction and repository status are summarized in [Verification](wiki/Verification.md). In particular, this report's older live-suite count predates the current six-scenario harness.
+
 | Stage | Deterministic checks | Live evidence |
 |---|---|---|
 | Decoder and comparison | Build, typecheck, lint; 60 tests passed | Decoder is offline. |

@@ -18,6 +18,7 @@ Node.js 24 and pnpm 12.23.0.
 ```bash
 git clone https://github.com/layhadarries/Dev3Proj.git
 cd Dev3Proj
+git switch main
 pnpm install --frozen-lockfile
 ```
 
@@ -52,5 +53,6 @@ node packages/security/scripts/demo.mjs fee
 node packages/security/scripts/demo.mjs tamper
 ```
 
-These scripts use public Devnet RPC reads and fixture/public addresses. They do
-not load private keys, sign or submit.
+Only the security demo scenarios use public Devnet RPC reads and fixture/public
+addresses; they do not load private keys, sign or submit. The integrated web
+app has a separate explicit wallet signing and Devnet submission flow.
