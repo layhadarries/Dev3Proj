@@ -14,7 +14,7 @@ The workflow runs:
 - Secret scanning
 - Devnet integration checks on pushes to main
 
-[PR #5](https://github.com/layhadarries/Dev3Proj/pull/5) proposes a dedicated CI step for existing deterministic transaction-security tests. Until merged, that step is not part of the recorded main workflow. Its coverage includes:
+[PR #5](https://github.com/layhadarries/Dev3Proj/pull/5) proposes dedicated deterministic transaction-security tests, mock-wallet browser regression and detailed audit logging. Until merged, that step is not part of the recorded main workflow. Its coverage includes:
 
 - Exact transaction and signed-receipt matching
 - Invalid, missing and mismatched receipt handling
@@ -31,6 +31,23 @@ The workflow runs:
 - Real browser-wallet smoke testing, including rejection, reload recovery and sign-out through the deployed application, remains separate verification work.
 - No Mainnet or real-fund test has been performed.
 - The dependency workflow gates high-severity findings. Moderate advisories require individual assessment and are not, by themselves, proof that the application is exploitable.
+
+## Dependency advisory assessment (T-04, 28 November 2026)
+
+The successful PR #8 checks job (run 46140545994) reports four moderate advisories and passes the high-severity gate. It does not print advisory IDs. The lockfile on main retains `jayson@4.3.0`, `uuid@8.3.2`, and `stream-json@1.9.1`. The previous security review identifies the following candidate advisories; confirm the exact current IDs and paths from the detailed audit output proposed in PR #5 before closing T-04.
+
+| Advisory | Relevant behavior | Preliminary assessment |
+| --- | --- | --- |
+| [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | UUID v3/v5/v6 output-buffer bounds | No application use of those methods with caller-supplied buffers has been established. |
+| [GHSA-528h-pc64-c93x](https://github.com/advisories/GHSA-528h-pc64-c93x) | Streaming path-filter CPU exhaustion | Firewall RPC uses lossless-json rather than the SDK transport; assess SDK dependency reachability separately. |
+| [GHSA-hqr4-qq8f-hg3x](https://github.com/advisories/GHSA-hqr4-qq8f-hg3x) | JSONC comment parsing CPU exhaustion | No application use of JSONC entry points has been established. |
+| [GHSA-mjw6-4jj6-33hc](https://github.com/advisories/GHSA-mjw6-4jj6-33hc) | Previously reported stream-json advisory | Exact advisory details and current dependency path still need confirmation. |
+
+These are preliminary reachability observations, not exemptions, proof of non-exploitability, or a clean audit. Do not force incompatible transitive major-version overrides during the demo freeze. Track compatible upstream fixes, review the SDK response path, and rerun frozen-lockfile installation, build, tests and audit after any coordinated dependency change.
+
+## Browser and route coverage (T-05)
+
+PR #5 now proposes running the existing Playwright mock-wallet browser script in CI, including matching, missing and mismatched receipt scenarios. This is separate from V8 unit-test coverage and from a live wallet extension. The script intercepts API requests, so it does not demonstrate real server ingress or blockchain behavior. The existing HTTP and server tests exercise route dispatch, origin, authentication, quotas and transaction outcomes; the security-header tests exercise CSP, HSTS and nonce forwarding. No fresh component line/branch percentage is claimed. Full rendered React component coverage and a rerun on the integrated UI revision remain outstanding.
 
 ## Deployed HTTPS security smoke test (pending)
 
