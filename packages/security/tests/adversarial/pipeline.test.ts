@@ -351,3 +351,24 @@ it("warns on new recipient and blocks inconsistent deltas, fees and missing evid
     "RPC_UNAVAILABLE",
   );
 });
+
+it("blocks an appended unsupported System instruction before any RPC work", async () => {
+  const { rpc, deps } = setup();
+  const message = new Transaction({ feePayer: p, recentBlockhash: hash })
+    .add(
+      SystemProgram.transfer({ fromPubkey: p, toPubkey: r, lamports: 8n }),
+      SystemProgram.allocate({ accountPubkey: p, space: 0 }),
+    )
+    .serializeMessage();
+  const report = await verify(intent, message, deps);
+  expect(report.verdict).toBe("BLOCK");
+  expect(report.findings[0]).toMatchObject({
+    ruleId: "UNSUPPORTED_INSTRUCTION",
+    evidence: { instructionIndex: 1 },
+  });
+  expect(report.simulation).toBeNull();
+  expect(rpc.identity).not.toHaveBeenCalled();
+  expect(rpc.fresh).not.toHaveBeenCalled();
+  expect(rpc.fee).not.toHaveBeenCalled();
+  expect(rpc.simulate).not.toHaveBeenCalled();
+});
