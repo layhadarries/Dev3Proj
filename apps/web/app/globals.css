@@ -417,3 +417,63 @@ a:hover {
 .contents {
   display: contents;
 }
+
+.analyzer summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.analyzer > .note {
+  margin-bottom: 0.9rem;
+}
+
+.analyzer label {
+  display: block;
+  margin: 0.9rem 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.analyzer input,
+.analyzer textarea {
+  display: block;
+  width: 100%;
+  margin: 0.35rem 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.analyzer input {
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  padding: 0.6rem 0.9rem;
+}
+
+.analyzer input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.verdict {
+  margin-top: 1rem;
+  padding: 0.25rem 1rem 0.75rem;
+  border-style: solid;
+  border-radius: 0.75rem;
+}
+
+.intended {
+  overflow-wrap: anywhere;
+}
+
+.instructions {
+  padding-left: 1.4rem;
+}
+
+.instructions .flagged {
+  color: var(--text);
+  border-left: 3px solid var(--block);
+  padding-left: 0.6rem;
+}

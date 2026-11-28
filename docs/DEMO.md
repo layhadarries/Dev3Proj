@@ -48,6 +48,19 @@ node packages/security/scripts/demo.mjs unsupported # BLOCK UNSUPPORTED_INSTRUCT
 
 The output is JSON; point at `verdict` and `findings`. The `unsupported` scenario appends a non-transfer System Program instruction to an otherwise matching transfer. The engine must return `UNSUPPORTED_INSTRUCTION` at instruction index 1 (the second instruction), before simulation. This is a controlled fixture, not a token-permission inspection or a live submitted transaction.
 
+## Part 3: an attack on screen
+
+Needs `POST /api/analyze`. Connect the wallet, open **Check a transaction from another app**, press an
+example, then **Check transaction**. No wallet prompt appears and nothing is signed or sent.
+
+| Example | Expected |
+|---|---|
+| Hidden extra transfer | `BLOCK EXTRA_TRANSFER`; instruction 2 sends 50 times the amount to another address |
+| Swapped recipient | `BLOCK RECIPIENT_MISMATCH`; the real destination is shown |
+
+The examples are made up in the browser and labelled as tests. Say so when showing them. Analyses
+are limited to five per minute.
+
 ## What to say, and what not to claim
 
 - The model only reads the request. It gets no tools or keys, and its answer must match what was typed.
