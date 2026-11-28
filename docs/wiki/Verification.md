@@ -1,30 +1,41 @@
 # Verification and coverage
 
-## Evidence at the latest documented challenge commit
+## Current evidence
 
-Source: `feat/security-hardening` commit `36172a4eac29dd04b1eb53af6059ae398d799223`.
+The current source of truth is the merged main commit:
 
-Verified locally in the development session:
+- Commit: 74cb7e6396b0f034971d07c2519729d1e27db209
+- Latest successful main workflow: run 46054922795
+- Open pull requests at the last repository review: none
 
-| Area | Result |
-|---|---|
-| Workspace tests | 295 (96 security, 93 agent, 106 web) |
-| Security coverage | 92.03% statements, 88.95% branches, 96.07% functions, 93.84% lines |
-| Agent coverage | 99.31%, 97.97%, 100%, 99.15% |
-| Web coverage | 89.74%, 83.71%, 92.14%, 94.42% |
-| Session store | 91.50% statements, 84.53% branches, 100% functions, 96.62% lines |
-| Lint | Passed |
-| Typecheck | Passed |
-| Production build | Passed |
-| Audit | Passed threshold; 4 moderate advisories |
+The workflow runs:
 
-## Limits of evidence
+- Workspace build, typecheck, lint and tests
+- Dedicated transaction-security regression tests
+- High-severity dependency audit gate
+- Secret scanning
+- Devnet integration checks on pushes to main
 
-- Mocked RPC, wallet and model behavior is not live provider evidence.
-- Live browser tests and real extension tests remain separate results.
-- Live Devnet integration does not imply production ingress testing.
-- No live mainnet or real-fund test was performed.
-- CI status must be checked separately on the relevant commit/PR.
+The dedicated regression coverage exercises the existing deterministic tests for:
 
-Canonical measurements and caveats are in
-`docs/SECURITY_TEST_REPORT.md`.
+- Exact transaction and signed-receipt matching
+- Invalid, missing and mismatched receipt handling
+- Ambiguous submission outcomes
+- Confirmation-status classification
+- Server-side verification and request boundaries
+- Duplicate-submission protections represented by the flow and server tests
+
+## Evidence limits
+
+- The reported CI results are evidence for the commit and workflow run above; rerun CI after subsequent changes.
+- Unit and integration tests use deterministic fixtures and mocks where documented. They do not replace live wallet-extension testing.
+- The Devnet job does not prove production ingress or deployed-HTTPS behavior.
+- Real browser-wallet smoke testing, including rejection, reload recovery and sign-out through the deployed application, remains separate verification work.
+- No Mainnet or real-fund test has been performed.
+- The dependency workflow gates high-severity findings. Moderate advisories require individual assessment and are not, by themselves, proof that the application is exploitable.
+
+## Scope
+
+The MVP covers Devnet-only legacy SOL transfers with one signer, explicit intent confirmation, deterministic inspection, simulation, warning acknowledgement, wallet signing, exact signed-byte verification, controlled submission and receipt reconciliation.
+
+SPL tokens, Token-2022, lookup tables, Anchor workflows, Mainnet and durable multi-process session state remain outside the MVP scope.
