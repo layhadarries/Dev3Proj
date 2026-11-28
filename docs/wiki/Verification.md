@@ -2,10 +2,18 @@
 
 ## Current evidence
 
-The recorded baseline is the merged `main` commit below.
+The merged `main` baseline and the later PR #15 evidence head are distinct:
 
-- Commit: 74cb7e6396b0f034971d07c2519729d1e27db209
-- Latest successful main workflow: run 46054922795
+- Merged `main`: `3c1bfec622759b7e3eb92253e601fe6645bf198b`.
+- PR #15 evidence head: `a03d3de545102a3cc42cd3bb4930f7c9d702be9b`.
+- Earlier PR #15 workflow on `40ec329`: [run 46152422986](https://github.com/layhadarries/Dev3Proj/actions/runs/46152422986), checks and secret scanning passed; Devnet job skipped for the PR event.
+
+PR #15's independently executed report records 387 workspace tests (118
+security, 99 agent, 170 web), eight read-only live Devnet scenarios, and HTTPS
+synthetic tests 4/4. Its Devnet
+demonstrations did not sign or submit transactions. These results are distinct
+from teammate-reported browser results and do not claim real wallet-extension
+or deployed-HTTPS verification.
 
 The workflow runs:
 
@@ -14,7 +22,7 @@ The workflow runs:
 - Secret scanning
 - Devnet integration checks on pushes to main
 
-[PR #5](https://github.com/layhadarries/Dev3Proj/pull/5) proposes dedicated deterministic transaction-security tests, mock-wallet browser regression and detailed audit logging. Until merged, that step is not part of the recorded main workflow. Its coverage includes:
+[PR #5](https://github.com/layhadarries/Dev3Proj/pull/5) added dedicated deterministic transaction-security tests, mock-wallet browser regression and detailed audit logging. Its coverage includes:
 
 - Exact transaction and signed-receipt matching
 - Invalid, missing and mismatched receipt handling
@@ -50,12 +58,12 @@ The security engine's RPC client uses lossless-json, not the SDK transport; the 
 PR #5 run 46143168135 passed all three mock-wallet Chromium scenarios (empty, mismatched and matching receipt), each with one submit. This is separate from V8 coverage and live extension testing; the browser script intercepts API calls. The HTTP and server tests cover route dispatch, origin, authentication, quotas and transaction outcomes; the security-header tests cover CSP, HSTS and nonce forwarding. Full rendered React component line/branch coverage remains unmeasured. Ethan's agent separately reported successful combined-branch tests on the earlier PR revisions in [Issue #2](https://github.com/layhadarries/Dev3Proj/issues/2#issuecomment-7238875337); those are teammate-reported, not independently rerun results for the final integrated commit.
 
 
-## Deployed HTTPS security smoke test (pending)
+## Deployed HTTPS security smoke test (awaiting deployment)
 
-PR #5 adds a credential-free ingress harness. After it is merged, run it against the owner-authorized Devnet deployment (use the canonical origin, not a URL with a path):
+The credential-free ingress harness is present and its synthetic regression suite passes, but an authorized deployment URL is not available. GitHub deployment records are empty and repository documentation does not identify a real deployment. Await an owner-provided canonical origin; do not use the example origin below as a target. Then run:
 
 ```sh
-node scripts/verify-https.mjs https://YOUR-AUTHORIZED-DEVNET-ORIGIN
+node scripts/verify-https.mjs https://OWNER-PROVIDED-ORIGIN
 ```
 
 It checks production CSP and nonce refresh, HSTS, other browser security headers, unauthenticated and cross-origin refusal, and unknown-route handling using seven bounded requests. It sends no credentials, wallet keys, valid intents or signed transactions, follows no redirects and does not print response bodies. The harness is tested against synthetic responses in CI. This is not a live wallet test; the deployed URL and exact deployed commit must still be recorded separately.

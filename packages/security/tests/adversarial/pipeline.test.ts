@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import {
   Keypair,
   PublicKey,
+  ComputeBudgetProgram,
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
@@ -335,17 +336,41 @@ it("rejects expired approvals, invalid blockhashes and changed fees", async () =
   rpc.fresh.mockRejectedValueOnce(new Error("BLOCKHASH_NOT_VALID"));
   expect((await verify(intent, msg, d)).findings[0]?.ruleId).toBe("TX_EXPIRED");
 });
-it("warns on new recipient and blocks inconsistent deltas, fees and missing evidence", async () => {
+it.each([
+  ["fee cap", { maxFeeLamports: 4999n }, "EXCESSIVE_PRIORITY_FEE"],
+  ["spend cap", { maxSpendLamports: 5004n }, "AMOUNT_MISMATCH"],
+])("blocks %s before simulation", async (_name, limits, rule) => {
+  const { deps, rpc } = setup();
+  const report = await verify(intent, msg, { ...deps, ...limits });
+  expect(report.findings[0]?.ruleId).toBe(rule);
+  expect(rpc.simulate).not.toHaveBeenCalled();
+});
+it("enforces an encoded priority-fee cap before simulation", async () => {
+  const priced = new Transaction({ feePayer: p, recentBlockhash: hash })
+    .add(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000_000n }),
+      SystemProgram.transfer({
+        fromPubkey: p,
+        toPubkey: r,
+        lamports: 8n,
+      }),
+    )
+    .serializeMessage();
+  const { deps, rpc } = setup();
+  const report = await verify(intent, priced, {
+    ...deps,
+    config: { maxPriorityFeeLamports: 0n },
+  });
+  expect(report.findings[0]?.ruleId).toBe("EXCESSIVE_PRIORITY_FEE");
+  expect(rpc.simulate).not.toHaveBeenCalled();
+});
+it("warns on a new recipient and blocks inconsistent deltas and missing evidence", async () => {
   const { value, deps, rpc } = setup(0n);
   expect((await verify(intent, msg, deps)).verdict).toBe("WARN");
   value.postBalances[1] = 9n;
   expect((await verify(intent, msg, deps)).findings[0]?.ruleId).toBe(
     "UNEXPECTED_BALANCE_CHANGE",
   );
-  expect(
-    (await verify(intent, msg, { ...deps, maxFeeLamports: 4999n })).findings[0]
-      ?.ruleId,
-  ).toBe("EXCESSIVE_PRIORITY_FEE");
   rpc.simulate.mockRejectedValue(new Error("private rpc detail"));
   expect((await verify(intent, msg, deps)).findings[0]?.ruleId).toBe(
     "RPC_UNAVAILABLE",

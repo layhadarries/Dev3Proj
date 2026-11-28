@@ -457,8 +457,9 @@ Regression tests exercise the actual configured SDK write transport with an
 injected synthetic fetch and check the exact signed wire, HTTP send attempt
 count, expected-signature status lookup and replay rejection. They cover HTTP
 200, 429, 500, 503 and an unresolved rate-limited submission. The tests do not
-contact a live RPC or broadcast funds. Execution of these added tests remains
-pending at this revision; no new passing test or coverage totals are claimed.
+contact a live RPC or broadcast funds. These tests were executed in the final
+workspace run below. This is deterministic mocked transport evidence, not proof
+of provider behavior.
 The application deadline still does not guarantee cancellation of underlying
 network work or control retries by external infrastructure.
 
@@ -471,5 +472,130 @@ evidence. Processed observations and unknown strings remain provisional. Empty
 objects and arrays are not definitive error evidence, and malformed legacy slot
 metadata is rejected. Regression tests exercise confirmed, finalized, legacy,
 processed and malformed statuses plus the authenticated submit response and
-one-shot behavior. Full workspace execution and independent browser retesting
-remain pending; no passing results or coverage figures are claimed here.
+one-shot behavior. These tests were executed in the final workspace run below.
+This does not claim independent browser or production-provider verification.
+
+## Final security demonstration — 2026-11-29
+
+**Merged baseline:** `main` at `3c1bfec622759b7e3eb92253e601fe6645bf198b`.
+**PR #15 evidence head:** `40ec32928b5f8b98457837aae0c2ce41d75758d2`, with
+the Tazio-owned demo-evidence changes based on commit
+`5fff4038d66f35633b79e23e6c5b4bad66826d1f`.
+
+**Commands executed**
+
+```sh
+pnpm build
+node --test packages/security/tests/integration/devnet.mjs
+pnpm --filter @solguard/security test
+pnpm --filter @solguard/security typecheck
+pnpm --filter @solguard/security build
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm audit --audit-level high
+node --test scripts/verify-https.test.mjs
+```
+
+**Independently executed, read-only live Devnet results:** the explicit Node
+integration suite ran eight cases (the seven requested scenarios plus the
+preserved unsupported-instruction regression):
+8 passed, 0 failed, 0 skipped. Per-case actual verdict and first finding:
+
+| Scenario | Expected | Actual | Finding/rule | Simulation |
+|---|---|---|---|---|
+| Legitimate transfer | PASS | PASS | none | Present; live read-only simulation |
+| New recipient | WARN | WARN | `RECIPIENT_NEW_ACCOUNT` | Present; live read-only simulation |
+| Hidden additional transfer | BLOCK | BLOCK | `EXTRA_TRANSFER` | None; rejected before simulation |
+| Recipient substitution | BLOCK | BLOCK | `RECIPIENT_MISMATCH` | None; rejected before simulation |
+| Amount manipulation | BLOCK | BLOCK | `AMOUNT_MISMATCH` | None; rejected before simulation |
+| Excessive priority fee | BLOCK | BLOCK | `EXCESSIVE_PRIORITY_FEE` | None; cap rejects before simulation |
+| Transaction tampering | BLOCK | BLOCK | `TX_MODIFIED` | None for modified wire; unsigned fixture was not approved |
+| Existing unsupported-instruction regression | BLOCK | BLOCK | `UNSUPPORTED_INSTRUCTION` | None |
+
+The WARN fixture uses a random 32-byte public address generated with
+`randomBytes`; it does not generate a keypair. The live runner obtains a recent
+Devnet blockhash and performs RPC identity, fee, simulation, and freshness
+reads when a scenario reaches those stages. The new-recipient address does not
+depend on or expose a known private key. In the transaction-tampering scenario,
+the unmodified unsigned bytes first pass live verification and simulation and
+an unsigned handoff is prepared; the local wire bytes are then mutated and
+`verifySigned` rejects them as `TX_MODIFIED`. No wallet signature is created.
+Thus the final BLOCK report has no simulation attached, but an earlier live
+simulation did occur.
+No private signing key is used. Controlled wire mutation is local test data
+only. These scenarios do not load a key, request wallet approval, sign with a
+wallet, call a submission transport, broadcast, or submit a transaction. They are live
+read-only RPC observations; pipeline unit cases and browser harness evidence
+elsewhere in this report are deterministic/mock evidence and are not real
+wallet-extension tests.
+
+**Verification results:** GitHub Actions run
+[46152422986](https://github.com/layhadarries/Dev3Proj/actions/runs/46152422986)
+passed the checks and secret-scanning jobs at the PR #15 evidence head; its
+Devnet job was skipped for the pull-request event. Confirmed suite counts are
+security 118 across 10 files, agent 99 across 1 file, and web 170 across 7
+files: **387 workspace tests passed**. `pnpm test` completed successfully.
+Security typecheck/build, root typecheck,
+root lint, and full production build passed. HTTPS synthetic tests: 4 passed.
+`pnpm audit --audit-level high` exited 0 and reported four moderate findings,
+zero high findings at the requested threshold. `git diff --check` passed.
+Build/test commands performed no transaction submission.
+
+**Outstanding evidence:** no real wallet-extension test and no deployed HTTPS
+verification were performed. GitHub reports no deployment records, and the
+repository contains no configured or documented actual deployment URL; the
+team must provide an authorized deployment URL before running the HTTPS
+verifier. The audit-mentioned Python browser/wire probes are not present among
+tracked repository files and were not recreated. Teammate-reported browser
+results elsewhere in this report are identified as such and are not independent
+results from this run. PR #15's GitHub workflow includes a mock-wallet browser
+regression, not a real extension or live submission.
+
+The 387-test totals and live-demo results above are independently executed
+results in the PR #15 worktree. Run 46152422986 independently confirms the
+387 suite counts at the earlier PR head; its Devnet job was skipped. It also
+ran the mock-wallet browser regression, which is CI/mock evidence rather than
+real extension testing. Browser and live-transfer results attributed elsewhere
+in this report to Ethan's agent remain teammate-reported and are not relabeled
+as independently repeated here.
+
+## Manual real-wallet release verification checklist
+
+This is a human-run plan, not completed evidence. Use only a disposable
+Devnet-funded test wallet. Never provide or export its seed phrase/private key
+to the application or this report. Do not proceed with any transaction until
+Tazio explicitly authorizes that specific Devnet test submission.
+
+1. From the repository root, run `pnpm install --frozen-lockfile && pnpm build`,
+   then start the built Next app with `cd apps/web && pnpm start` (defaults to
+   port 3000). Set `APP_ORIGIN` to the exact origin used in the browser, e.g.
+   `https://localhost:3000` only when a trusted local HTTPS terminator is
+   configured; plain `http://localhost:3000` is development-only and cannot
+   verify Secure-cookie/HSTS behavior. The application RPC is pinned to
+   `https://api.devnet.solana.com`; the optional spend setting is
+   `SOLGUARD_MAX_SPEND_LAMPORTS` (default 1 SOL in lamports). Do not add
+   credentials to command history.
+2. Install/open Phantom (or another supported wallet extension), switch it to
+   Solana Devnet, and verify the selected account is the disposable test wallet.
+3. Connect and authenticate. Reject the wallet signature once; confirm no
+   session or transaction submission is created. Reconnect and approve the
+   authentication signature.
+4. Before any transfer, obtain explicit authorization for one small test-SOL
+   transaction. Verify recipient, amount, fee and Devnet in the app and wallet.
+   Confirm the returned receipt exactly matches the locally signed transaction
+   and the same Devnet signature. Record only the public signature if approved.
+5. Try a new recipient; verify WARN and require explicit acknowledgement before
+   the wallet approval prompt. Cancel unless that separate transaction is
+   explicitly authorized.
+6. In the external analyzer, inspect malformed/signed wire, recipient mismatch
+   and amount mismatch examples; confirm BLOCK with no sign or submit action.
+7. Leave a confirmation pending until it expires; verify a fresh confirmation
+   is required. Sign out and verify protected calls using the old session fail.
+8. For reload recovery, reload only after a safely authorized test submission
+   reaches an ambiguous state. Check the prior receipt/status before taking any
+   action; verify no automatic resubmit or duplicate dispatch. Do not create an
+   ambiguous outcome deliberately with a funded transaction.
+9. Verify one-shot behavior by checking the app rejects replay; do not click
+   submit repeatedly to test it. Stop at wallet approval unless the
+   transaction-specific authorization is explicit.
