@@ -5,7 +5,16 @@ import { fileURLToPath, URL } from "node:url";
 import process from "node:process";
 import assert from "node:assert/strict";
 
-for (const scenario of ["match", "warn", "extra", "recipient", "amount", "fee", "tamper", "unsupported"]) {
+for (const scenario of [
+  "match",
+  "warn",
+  "extra",
+  "recipient",
+  "amount",
+  "fee",
+  "tamper",
+  "unsupported",
+]) {
   test(`live Devnet demo: ${scenario}`, () => {
     const result = JSON.parse(
       execFileSync(
@@ -39,5 +48,9 @@ for (const scenario of ["match", "warn", "extra", "recipient", "amount", "fee", 
       assert.equal(result.report.findings[0]?.ruleId, "EXCESSIVE_PRIORITY_FEE");
       assert.equal(result.report.simulation, null);
     }
+    if (["extra", "recipient", "amount", "tamper"].includes(scenario))
+      assert.equal(result.report.simulation, null);
+    if (["extra", "recipient", "amount", "tamper"].includes(scenario))
+      assert.ok(result.report.findings.length > 0);
   });
 }
