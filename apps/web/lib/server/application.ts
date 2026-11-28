@@ -17,17 +17,20 @@ const DEVNET_CONNECTION = new Connection(SOLANA_DEVNET_RPC, "confirmed");
 
 /** Separate write transport: maxRetries controls validator forwarding, not SDK HTTP retries. */
 export function createDevnetSubmissionTransport(fetchOverride?: ConnectionConfig["fetch"]) {
-  const connection = new Connection(SOLANA_DEVNET_RPC, {
-    commitment: "confirmed",
-    disableRetryOnRateLimit: true,
-    ...(fetchOverride ? { fetch: fetchOverride } : {}),
-  });
-  return (signedBytes: Uint8Array): Promise<string> =>
-    connection.sendRawTransaction(Buffer.from(signedBytes), {
+  return (signedBytes: Uint8Array, signal?: AbortSignal): Promise<string> => {
+    // One connection per write: the abort signal must never be shared across submissions.
+    const transport = fetchOverride ?? globalThis.fetch;
+    const connection = new Connection(SOLANA_DEVNET_RPC, {
+      commitment: "confirmed",
+      disableRetryOnRateLimit: true,
+      fetch: (input, init) => transport(input, { ...init, signal }),
+    });
+    return connection.sendRawTransaction(Buffer.from(signedBytes), {
       skipPreflight: false,
       maxRetries: 0,
       preflightCommitment: "confirmed",
     });
+  };
 }
 
 const submitDevnet = createDevnetSubmissionTransport();
@@ -56,13 +59,14 @@ type BroadcastResult =
   | { outcome: "timeout" };
 
 async function broadcastWithDeadline(
-  submit: (signedBytes: Uint8Array) => Promise<string>,
+  submit: (signedBytes: Uint8Array, signal: AbortSignal) => Promise<string>,
   snapshot: Uint8Array,
   timeoutMs: number,
 ): Promise<BroadcastResult> {
+  const controller = new AbortController();
   let broadcastPromise: Promise<string>;
   try {
-    broadcastPromise = Promise.resolve(submit(snapshot));
+    broadcastPromise = Promise.resolve(submit(snapshot, controller.signal));
   } catch {
     return { outcome: "thrown" };
   }
@@ -76,7 +80,11 @@ async function broadcastWithDeadline(
         () => ({ outcome: "thrown" as const }),
       ),
       new Promise<{ outcome: "timeout" }>((resolve) => {
-        timer = setTimeout(() => resolve({ outcome: "timeout" }), timeoutMs);
+        timer = setTimeout(() => {
+          // Aborting the local HTTP request does not establish whether the ledger received it.
+          resolve({ outcome: "timeout" });
+          controller.abort();
+        }, timeoutMs);
       }),
     ]);
   } finally {
@@ -328,7 +336,7 @@ export interface ApplicationDependencies {
   now?: () => number;
   llm?: ReturnType<typeof llmFromEnv>;
   blockhash?: () => Promise<{ blockhash: string; lastValidBlockHeight: number }>;
-  submit?: (signedBytes: Uint8Array) => Promise<string>;
+  submit?: (signedBytes: Uint8Array, signal: AbortSignal) => Promise<string>;
   getSignatureStatus?: (signature: string) => Promise<SignatureStatus | null>;
   sleep?: (milliseconds: number) => Promise<void>;
   broadcastTimeoutMs?: number;
