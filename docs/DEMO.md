@@ -34,7 +34,7 @@ New recipients need at least about 0.001 SOL, or the simulation fails.
 
 ## Part 2: attacks
 
-These run the real security engine against live Devnet. They sign and send nothing.
+From a second terminal at the repository root, run these scenarios with the real security engine against live Devnet. They sign and send nothing.
 The attacker's transaction is built by this test script, not by the app.
 
 ```bash

@@ -18,6 +18,7 @@ Node.js 24 and pnpm 12.23.0.
 ```bash
 git clone https://github.com/layhadarries/Dev3Proj.git
 cd Dev3Proj
+git switch main
 pnpm install --frozen-lockfile
 ```
 
@@ -33,8 +34,7 @@ pnpm test
 ## Start the web app
 
 ```bash
-cd apps/web
-pnpm dev
+pnpm --filter @solguard/web dev
 ```
 
 The app normally expects a same-origin browser at `http://localhost:3000`.
@@ -44,13 +44,13 @@ Set `APP_ORIGIN` if the development hostname differs.
 
 ```bash
 node packages/security/scripts/demo.mjs match
-node packages/security/scripts/demo.mjs warn
 node packages/security/scripts/demo.mjs extra
 node packages/security/scripts/demo.mjs recipient
 node packages/security/scripts/demo.mjs amount
-node packages/security/scripts/demo.mjs fee
 node packages/security/scripts/demo.mjs tamper
+node packages/security/scripts/demo.mjs unsupported
 ```
 
-These scripts use public Devnet RPC reads and fixture/public addresses. They do
-not load private keys, sign or submit.
+Only the security demo scenarios use public Devnet RPC reads and fixture/public
+addresses; they do not load private keys, sign or submit. The integrated web
+app has a separate explicit wallet signing and Devnet submission flow.

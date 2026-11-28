@@ -8,6 +8,9 @@ server-issued card, inspects the resulting transaction, simulates it, compares
 its effects with the confirmed intent and prevents a mismatch from reaching the
 wallet signing flow.
 
+The integrated app can broadcast on Devnet after explicit wallet signing; its
+separate read-only demo commands do not submit transactions.
+
 ## The problem
 
 A transaction can be valid for the Solana runtime and still differ from the
@@ -35,6 +38,7 @@ human confirmation establish the approval boundary.
 - Sign-only wallet handoff
 - Exact signed-byte verification before Devnet broadcast
 - Confirmed/finalized commitment reconciliation
+- Informational unsigned-transaction analysis endpoint (not an authorization path)
 - CSP, CSRF/origin checks, rate limits and process-local in-flight limits
 
 ## Explicitly unsupported
@@ -78,3 +82,6 @@ The repository distinguishes:
 
 SolGuard has not been independently audited and must not be presented as
 guaranteed protection.
+
+For current evidence and pending verification, see
+[Verification and coverage](Verification) and [Limitations](Limitations).

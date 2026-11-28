@@ -22,12 +22,11 @@ The engine verifies:
 - extra signers
 - priority/total fee limits
 - decoded simulation evidence
-- payer/recipient/same-bank balance changes
-- payer balance and rent-relevant behavior
+- payer/recipient and simulated balance-vector consistency/change
 - blockhash freshness
 - exact message hash
-- signed message and payer signature
-- confirmed/finalized status for broadcast outcomes
+- exact signed message bytes and payer signature before submission
+- expected-signature reconciliation to confirmed/finalized status after broadcast
 
 The default server spending limit is 1,000,000,000 lamports (1 SOL), including
 fees. It is server-configurable only through

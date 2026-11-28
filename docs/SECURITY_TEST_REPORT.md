@@ -1,5 +1,7 @@
 # Legacy SOL pipeline validation — 2026-11-27
 
+> **Evidence history.** Counts and branch references below describe the revisions tested at the time. See [Verification](wiki/Verification.md) for the integrated baseline, current evidence and outstanding release checks.
+
 | Stage | Deterministic checks | Live evidence |
 |---|---|---|
 | Decoder and comparison | Build, typecheck, lint; 60 tests passed | Decoder is offline. |
@@ -475,7 +477,7 @@ processed and malformed statuses plus the authenticated submit response and
 one-shot behavior. These tests were executed in the final workspace run below.
 This does not claim independent browser or production-provider verification.
 
-## Final security demonstration — 2026-11-29
+## Final security demonstration — 2026-11-28
 
 **Merged baseline:** `main` at `3c1bfec622759b7e3eb92253e601fe6645bf198b`.
 **PR #15 evidence head:** `40ec32928b5f8b98457837aae0c2ce41d75758d2`, with
@@ -543,8 +545,7 @@ zero high findings at the requested threshold. `git diff --check` passed.
 Build/test commands performed no transaction submission.
 
 **Outstanding evidence:** no real wallet-extension test and no deployed HTTPS
-verification were performed. GitHub reports no deployment records, and the
-repository contains no configured or documented actual deployment URL; the
+verification were performed. No authorized reachable deployment URL was established during this verification; the
 team must provide an authorized deployment URL before running the HTTPS
 verifier. The audit-mentioned Python browser/wire probes are not present among
 tracked repository files and were not recreated. Teammate-reported browser
@@ -552,8 +553,9 @@ results elsewhere in this report are identified as such and are not independent
 results from this run. PR #15's GitHub workflow includes a mock-wallet browser
 regression, not a real extension or live submission.
 
-The 387-test totals and live-demo results above are independently executed
-results in the PR #15 worktree. Run 46152422986 independently confirms the
+The 387-test totals and live-demo results above were executed locally
+in the PR #15 worktree. PR #15 was merged at `ad404f5` after its final
+head passed CI ([run 46153131293](https://github.com/layhadarries/Dev3Proj/actions/runs/46153131293)); its Devnet job was skipped. Run 46152422986 independently confirms the
 387 suite counts at the earlier PR head; its Devnet job was skipped. It also
 ran the mock-wallet browser regression, which is CI/mock evidence rather than
 real extension testing. Browser and live-transfer results attributed elsewhere

@@ -2,13 +2,14 @@
 
 ## Current evidence
 
-The merged `main` baseline and the later PR #15 evidence head are distinct:
+The expanded demonstration suite from PR #15 is now merged. Earlier CI and pre-merge evidence remain revision-specific:
 
-- Merged `main`: `3c1bfec622759b7e3eb92253e601fe6645bf198b`.
-- PR #15 evidence head: `a03d3de545102a3cc42cd3bb4930f7c9d702be9b`.
+- Earlier integrated `main`: `3c1bfec622759b7e3eb92253e601fe6645bf198b`.
+- PR #15 merge into `main`: `ad404f5c0a0a729733b4d77b1480210ab0d3b29a`.
+- Final PR #15 head: `d88d96e1706f0510aab3265a11c3a7f77e6b43ee`; [run 46153131293](https://github.com/layhadarries/Dev3Proj/actions/runs/46153131293) passed checks and secret scanning (Devnet skipped for PR event).
 - Earlier PR #15 workflow on `40ec329`: [run 46152422986](https://github.com/layhadarries/Dev3Proj/actions/runs/46152422986), checks and secret scanning passed; Devnet job skipped for the PR event.
 
-PR #15's independently executed report records 387 workspace tests (118
+PR #15's locally executed report records 387 workspace tests (118
 security, 99 agent, 170 web), eight read-only live Devnet scenarios, and HTTPS
 synthetic tests 4/4. Its Devnet
 demonstrations did not sign or submit transactions. These results are distinct
@@ -30,6 +31,10 @@ The workflow runs:
 - Confirmation-status classification
 - Server-side verification and request boundaries
 - Duplicate-submission protections represented by the flow and server tests
+
+## Verified branch snapshot
+
+[Main CI run 46151035003](https://github.com/layhadarries/Dev3Proj/actions/runs/46151035003) passed on `3c1bfec`. Its then-current live harness ran six cases once each: `match`, `extra`, `recipient`, `amount`, `tamper`, `unsupported`. The [PR #15 report](https://github.com/layhadarries/Dev3Proj/blob/d88d96e1706f0510aab3265a11c3a7f77e6b43ee/docs/SECURITY_TEST_REPORT.md#final-security-demonstration--2026-11-29) includes `warn` and `fee` for eight total. These eight scenarios are now present on main. The local live results and historical CI runs above do not establish the outcome of post-merge CI.
 
 ## Evidence limits
 
@@ -60,7 +65,7 @@ PR #5 run 46143168135 passed all three mock-wallet Chromium scenarios (empty, mi
 
 ## Deployed HTTPS security smoke test (awaiting deployment)
 
-The credential-free ingress harness is present and its synthetic regression suite passes, but an authorized deployment URL is not available. GitHub deployment records are empty and repository documentation does not identify a real deployment. Await an owner-provided canonical origin; do not use the example origin below as a target. Then run:
+The credential-free ingress harness is present and its synthetic regression suite passes, but an authorized deployment URL is not available. No owner-authorized deployed origin has been established in the recorded evidence; deployment records alone do not establish a reachable application URL. Await an owner-provided canonical origin; do not use the example origin below as a target. Then run:
 
 ```sh
 node scripts/verify-https.mjs https://OWNER-PROVIDED-ORIGIN
