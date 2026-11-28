@@ -29,8 +29,9 @@ export async function verifyHttps(target, fetcher = globalThis.fetch) {
     for (const raw of (response.headers.get("content-security-policy") ?? "").split(";")) {
       const [key, ...values] = raw.trim().split(/\s+/);
       if (!key) continue;
-      if (directives.has(key)) unique = false;
-      directives.set(key, values);
+      const name = key.toLowerCase();
+      if (directives.has(name)) unique = false;
+      directives.set(name, values);
     }
     const exact = (key, ...expected) => {
       const actual = directives.get(key) ?? [];
@@ -40,6 +41,7 @@ export async function verifyHttps(target, fetcher = globalThis.fetch) {
     const nonces = script.filter(value => /^'nonce-[A-Za-z0-9+/_=-]+'$/.test(value));
     const nonce = nonces[0];
     record(label + " enforced production CSP", unique && nonces.length === 1 &&
+      !directives.has("script-src-elem") && !directives.has("style-src-elem") &&
       exact("default-src", "'self'") &&
       exact("script-src", "'self'", "'strict-dynamic'", nonce) &&
       exact("style-src", "'self'", nonce) &&

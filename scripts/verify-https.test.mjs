@@ -4,7 +4,10 @@ import { test } from "node:test";
 import { verifyHttps } from "./verify-https.mjs";
 
 const origin = "https://solguard.example";
-function mockDeployment({ sameNonce = false, unsafe = false, authStatus = 401, redirect = false } = {}) {
+function mockDeployment({
+  sameNonce = false, unsafe = false, authStatus = 401, redirect = false,
+  prefixDirectives = [], extraDirectives = [],
+} = {}) {
   const requests = [];
   let pages = 0;
   const fetcher = async (url, init) => {
@@ -15,12 +18,14 @@ function mockDeployment({ sameNonce = false, unsafe = false, authStatus = 401, r
       return new Response("<html></html>", { status: redirect ? 302 : 200, headers: {
         "content-type": "text/html; charset=utf-8",
         "content-security-policy": [
+          ...prefixDirectives,
           "default-src 'self'",
           "script-src 'self' 'strict-dynamic' " + nonce + (unsafe ? " 'unsafe-eval'" : ""),
           "style-src 'self' " + nonce,
           "script-src-attr 'none'", "style-src-attr 'none'", "connect-src 'self'",
           "object-src 'none'", "base-uri 'self'", "form-action 'self'",
           "frame-src 'none'", "frame-ancestors 'none'", "upgrade-insecure-requests",
+          ...extraDirectives,
         ].join("; "),
         "strict-transport-security": "max-age=31536000",
         "x-frame-options": "DENY",
@@ -63,6 +68,22 @@ test("flags nonce reuse, unsafe CSP, redirects and unexpected auth success", asy
   assert.ok(failed.includes("Page 1 enforced production CSP"));
   assert.ok(failed.includes("Page 1 HTTP 200 HTML"));
   assert.ok(failed.includes("Unauthenticated parse HTTP 401"));
+});
+
+test("rejects case-insensitive duplicate directives and element-level policy overrides", async () => {
+  const cases = [
+    { prefixDirectives: ["SCRIPT-SRC 'unsafe-inline'"] },
+    { extraDirectives: ["script-src-elem * 'unsafe-inline'"] },
+    { extraDirectives: ["style-src-elem * 'unsafe-inline'"] },
+  ];
+  for (const options of cases) {
+    const { fetcher } = mockDeployment(options);
+    const checks = await verifyHttps(origin, fetcher);
+    assert.equal(
+      checks.find(x => x.name === "Page 1 enforced production CSP")?.passed,
+      false,
+    );
+  }
 });
 
 test("rejects malformed or non-HTTPS deployment origins before any request", async () => {
