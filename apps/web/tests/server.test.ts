@@ -942,6 +942,37 @@ describe("external transaction analysis", () => {
     });
   });
 
+  it("binds the analyzed transaction payer to the authenticated wallet and rejects self-transfers", async () => {
+    await withSpendLimit("1000000000", async () => {
+      const payer = Keypair.generate();
+      const otherPayer = Keypair.generate();
+      const recipient = Keypair.generate().publicKey.toBase58();
+      const rpc = verificationRpc(8n);
+      const simulate = vi.spyOn(rpc, "simulate");
+      const app = handlers({ rpc });
+      const session = await signIn(app, payer);
+      const foreign = await app.analyze(request("analyze", {
+        recipient,
+        amountBaseUnits: "8",
+        transactionBase64: unsignedTransfer(otherPayer, recipient).toString("base64"),
+      }, { cookie: session.cookie }));
+      const foreignBody = await foreign.json();
+      expect(foreign.status).toBe(200);
+      expect(foreignBody.report.verdict).toBe("BLOCK");
+      expect(foreignBody.report.findings[0].ruleId).toBe("PAYER_MISMATCH");
+      expect(foreignBody.report.simulation).toBeNull();
+      expect(simulate).not.toHaveBeenCalled();
+
+      const self = await app.analyze(request("analyze", {
+        recipient: payer.publicKey.toBase58(),
+        amountBaseUnits: "8",
+        transactionBase64: unsignedTransfer(payer, payer.publicKey.toBase58()).toString("base64"),
+      }, { cookie: session.cookie }));
+      expect(self.status).toBe(400);
+      expect(simulate).not.toHaveBeenCalled();
+    });
+  });
+
   it("fails closed for non-canonical base64 and signed or multi-signer wire data", async () => {
     await withSpendLimit("1000000000", async () => {
       const payer = Keypair.generate();
