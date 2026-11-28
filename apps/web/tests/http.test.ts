@@ -3,6 +3,8 @@ import { Keypair } from "@solana/web3.js";
 import { POST } from "../app/api/[...path]/route";
 import { dispatchApiRoute } from "../lib/server/route-dispatch";
 import {
+  BODY_READ_TIMEOUT_MS,
+  MAX_BODY_BYTES,
   clientAddress,
   errorResponse,
   expectedOrigin,
@@ -214,6 +216,76 @@ describe("HTTP security boundaries", () => {
       body: "{}",
     }), (value) => value)).rejects.toMatchObject({ status: 415 });
     await expect(readJson(request({}, "{\"ok\":true}"), (value) => value)).resolves.toEqual({ ok: true });
+  });
+
+  it("accepts a fragmented body at the byte limit and rejects a streamed overflow", async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify("x".repeat(MAX_BODY_BYTES - 2)));
+    const fragmented = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, 1));
+        controller.enqueue(new Uint8Array(0));
+        controller.enqueue(bytes.subarray(1));
+        controller.close();
+      },
+    });
+    const streamed = (body: ReadableStream<Uint8Array>) => new Request(
+      "https://solguard.example/api/test",
+      { method: "POST", headers: { "content-type": "application/json" }, body, duplex: "half" } as RequestInit,
+    );
+    await expect(readJson(streamed(fragmented), (value) => value)).resolves.toBe("x".repeat(MAX_BODY_BYTES - 2));
+
+    const cancel = vi.fn();
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.enqueue(new Uint8Array([32]));
+      },
+      cancel,
+    });
+    const parse = vi.fn();
+    await expect(readJson(streamed(oversized), parse)).rejects.toMatchObject({ status: 413 });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(parse).not.toHaveBeenCalled();
+    await expect(readJson(request({ "content-length": String(MAX_BODY_BYTES + 1) }, "{}"), parse))
+      .rejects.toMatchObject({ status: 413 });
+  });
+
+  it("rejects stalled bodies on a total deadline even if stream cancellation stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn(() => new Promise<void>(() => undefined));
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode("{}")); },
+        cancel,
+      });
+      const stalled = new Request("https://solguard.example/api/test", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        duplex: "half",
+      } as RequestInit);
+      const parse = vi.fn();
+      const rejection = expect(readJson(stalled, parse)).rejects.toMatchObject({ status: 408 });
+      await vi.advanceTimersByTimeAsync(BODY_READ_TIMEOUT_MS);
+      await rejection;
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(parse).not.toHaveBeenCalled();
+      expect(stalled.body?.locked).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects malformed UTF-8 rather than replacing bytes before validation", async () => {
+    const malformed = new Request("https://solguard.example/api/test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new Uint8Array([0x22, 0xc3, 0x28, 0x22]),
+    });
+    const parse = vi.fn();
+    await expect(readJson(malformed, parse)).rejects.toMatchObject({ status: 400 });
+    expect(parse).not.toHaveBeenCalled();
+    await expect(readJson(request({}, JSON.stringify("café ☀")), (value) => value)).resolves.toBe("café ☀");
   });
 
   it("keeps internal errors private and marks API responses non-cacheable", async () => {
