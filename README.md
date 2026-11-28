@@ -114,10 +114,12 @@ node --test packages/security/tests/integration/devnet.mjs
 | `amount` | Lamports differ | BLOCK | `AMOUNT_MISMATCH` |
 | `tamper` | Message bytes change after inspection | BLOCK | `TX_MODIFIED` |
 | `unsupported` | An unsupported System instruction is added | BLOCK | `UNSUPPORTED_INSTRUCTION` |
+| `warn` | Recipient is a newly generated public address | WARN | `RECIPIENT_NEW_ACCOUNT` |
+| `fee` | Excessive priority fee is requested | BLOCK | `EXCESSIVE_PRIORITY_FEE` |
 
-`main` runs each of these six cases once. In `tamper`, the original message passes simulation; the changed bytes fail the subsequent integrity check. Other cases can block before simulation.
+`main` now runs all eight cases once. In `tamper`, the original message passes simulation; the changed bytes fail the subsequent integrity check. Other cases can block before simulation.
 
-**Only in [PR #15’s evidence report](https://github.com/layhadarries/Dev3Proj/blob/d88d96e1706f0510aab3265a11c3a7f77e6b43ee/docs/SECURITY_TEST_REPORT.md#final-security-demonstration--2026-11-29):** the expanded suite ran all six above plus `warn` (WARN, `RECIPIENT_NEW_ACCOUNT`) and `fee` (BLOCK, `EXCESSIVE_PRIORITY_FEE`): **8/8**. Those two arguments are unavailable on this `main` baseline.
+The expanded suite was verified locally in [PR #15](https://github.com/layhadarries/Dev3Proj/pull/15) before it was merged into `main`: **8/8 read-only Devnet cases passed**.
 
 ## Architecture
 
@@ -175,12 +177,12 @@ These controls reduce specific risks; they do not guarantee safety or replace in
 
 | Evidence | Result | Source |
 |---|---|---|
-| Merged-main CI | At the last verified repository state, run `46151035003` passed checks, secret scan and Devnet job at main `3c1bfec` | [GitHub Actions](https://github.com/layhadarries/Dev3Proj/actions/runs/46151035003) |
-| PR #15 evidence (not merged into main) | 118 security + 99 agent + 170 web = **387 workspace tests**; 8/8 read-only live Devnet cases; HTTPS synthetic tests 4/4 | [PR #15](https://github.com/layhadarries/Dev3Proj/pull/15), [pinned report](https://github.com/layhadarries/Dev3Proj/blob/d88d96e1706f0510aab3265a11c3a7f77e6b43ee/docs/SECURITY_TEST_REPORT.md#final-security-demonstration--2026-11-29) |
-| PR #15 CI | Build, typecheck, lint, workspace tests, mock-wallet browser regression, high-severity audit gate and secret scanning passed on the earlier evidence head; PR Devnet job skipped | [Run `46152422986`](https://github.com/layhadarries/Dev3Proj/actions/runs/46152422986) |
+| Earlier main CI | Before the expanded demonstration suite, run `46151035003` passed checks, secret scan and Devnet job at main `3c1bfec` | [GitHub Actions](https://github.com/layhadarries/Dev3Proj/actions/runs/46151035003) |
+| PR #15 evidence (merged into main) | 118 security + 99 agent + 170 web = **387 workspace tests**; 8/8 read-only live Devnet cases; HTTPS synthetic tests 4/4 | [PR #15](https://github.com/layhadarries/Dev3Proj/pull/15), [pinned report](https://github.com/layhadarries/Dev3Proj/blob/d88d96e1706f0510aab3265a11c3a7f77e6b43ee/docs/SECURITY_TEST_REPORT.md#final-security-demonstration--2026-11-29) |
+| PR #15 pre-merge CI | Build, typecheck, lint, workspace tests, mock-wallet browser regression, high-severity audit gate and secret scanning passed on the final PR head; PR Devnet job skipped | [Run `46153131293`](https://github.com/layhadarries/Dev3Proj/actions/runs/46153131293) |
 | Dependency audit | High-severity gate passes; four moderate transitive advisories remain | [Advisory assessment](docs/wiki/Verification.md#dependency-advisory-assessment-t-04-28-november-2026) |
 
-These GitHub results are a dated snapshot from the audit, not a claim about the documentation PR's checks or current live repository status. The 387 is the workspace test total only; it does not add live demos, browser scenarios, contract probes or duplicate regression invocations. Teammate-reported live wallet submissions and browser results are labelled separately in the security report. Real wallet-extension and deployed-HTTPS checks remain separate and are not claimed here.
+These GitHub results are a dated snapshot from the audit, not a claim about the documentation PR's checks or current live repository status. The 387 is the workspace test total only; it does not add live demos, browser scenarios, contract probes or duplicate regression invocations. The expanded suite was merged at `ad404f5`; post-merge CI is separate from the recorded pre-merge evidence. Teammate-reported live wallet submissions and browser results are labelled separately in the security report. Real wallet-extension and deployed-HTTPS checks remain separate and are not claimed here.
 
 ## Supported scope and limitations
 

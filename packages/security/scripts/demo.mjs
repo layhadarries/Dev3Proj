@@ -1,8 +1,13 @@
 // Read-only public Devnet observations. No key loading, signing or submission.
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import process from "node:process";
 import console from "node:console";
-import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import {
+  ComputeBudgetProgram,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+} from "@solana/web3.js";
 import { serializeReport } from "@solguard/shared";
 import {
   getRecentBlockhash,
@@ -17,21 +22,35 @@ const [
   from = "964koDACp6GNSW8uL2J49CTa7kuFSQWPErgKMKK1E9QH",
   to = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
 ] = process.argv.slice(2);
-if (!["match", "extra", "amount", "recipient", "tamper", "unsupported"].includes(scenario))
-  throw Error("Unknown scenario");
+const scenarios = [
+  "match",
+  "warn",
+  "extra",
+  "amount",
+  "recipient",
+  "fee",
+  "tamper",
+  "unsupported",
+];
+if (!scenarios.includes(scenario)) throw Error("Unknown scenario");
 const payer = new PublicKey(from),
-  recipient = new PublicKey(to);
+  recipient =
+    scenario === "warn" ? new PublicKey(randomBytes(32)) : new PublicKey(to);
 const intent = parseConfirmedSolIntent({
   id: randomUUID(),
   confirmedAt: Date.now(),
   kind: "transfer",
   asset: { type: "SOL" },
   payer: from,
-  recipient: to,
+  recipient: String(recipient),
   amountBaseUnits: "500000000",
 });
 const { blockhash } = await getRecentBlockhash();
 const tx = new Transaction({ feePayer: payer, recentBlockhash: blockhash });
+if (scenario === "fee")
+  tx.add(
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000_000n }),
+  );
 const transfer = SystemProgram.transfer({
   fromPubkey: payer,
   toPubkey: scenario === "recipient" ? PublicKey.unique() : recipient,
@@ -40,10 +59,14 @@ const transfer = SystemProgram.transfer({
 tx.add(transfer);
 if (scenario === "extra") tx.add(transfer);
 // Controlled, unsigned fixture: a non-transfer System instruction is outside the SOL policy.
-if (scenario === "unsupported") tx.add(SystemProgram.allocate({ accountPubkey: payer, space: 0 }));
+if (scenario === "unsupported")
+  tx.add(SystemProgram.allocate({ accountPubkey: payer, space: 0 }));
 const deps = { walletPublicKey: from, network: "devnet" };
 const message = tx.serializeMessage();
-const unsigned = tx.serialize({requireAllSignatures:false, verifySignatures:false});
+const unsigned = tx.serialize({
+  requireAllSignatures: false,
+  verifySignatures: false,
+});
 let report = await verifyUnsigned(intent, unsigned, deps);
 if (["match", "tamper"].includes(scenario) && report.verdict === "PASS") {
   const wire = await prepareWalletApproval(intent, message, report, deps);
@@ -63,15 +86,22 @@ const expected = {
   extra: "EXTRA_TRANSFER",
   amount: "AMOUNT_MISMATCH",
   recipient: "RECIPIENT_MISMATCH",
+  fee: "EXCESSIVE_PRIORITY_FEE",
   tamper: "TX_MODIFIED",
   unsupported: "UNSUPPORTED_INSTRUCTION",
 };
+const expectedVerdict =
+  scenario === "match" ? "PASS" : scenario === "warn" ? "WARN" : "BLOCK";
 if (
-  scenario === "match"
-    ? report.verdict !== "PASS"
-    : report.verdict !== "BLOCK" ||
-      report.findings[0]?.ruleId !== expected[scenario] ||
-      (scenario === "unsupported" &&
-        (report.findings[0]?.evidence?.instructionIndex !== 1 || report.simulation !== null))
+  report.verdict !== expectedVerdict ||
+  ((scenario === "match" || scenario === "warn") &&
+    !(report.checkedAtSlot > 0 && report.simulation)) ||
+  (scenario !== "match" &&
+    report.findings[0]?.ruleId !==
+      (scenario === "warn" ? "RECIPIENT_NEW_ACCOUNT" : expected[scenario])) ||
+  (scenario === "fee" && report.simulation !== null) ||
+  (scenario === "unsupported" &&
+    (report.findings[0]?.evidence?.instructionIndex !== 1 ||
+      report.simulation !== null))
 )
   process.exitCode = 1;
