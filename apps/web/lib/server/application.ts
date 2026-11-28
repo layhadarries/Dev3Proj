@@ -597,6 +597,9 @@ export function createApplicationHandlers(dependencies: ApplicationDependencies 
         walletConcurrencyLimit: 1,
       }, async (input, session) => {
         if (!session) throw new HttpError(401, "Sign in with your wallet to continue");
+        if (input.recipient === session.walletPublicKey) {
+          throw new HttpError(400, "Recipient must differ from the connected wallet");
+        }
         const confirmedAt = now();
         if (!Number.isSafeInteger(confirmedAt) || confirmedAt < 0) {
           throw new HttpError(503, "Security analysis is temporarily unavailable");
