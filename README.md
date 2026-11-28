@@ -8,7 +8,7 @@ SolGuard is an intent-aware, pre-sign transaction firewall for Solana. You descr
 
 Built for the Zettabyte team at the Dev3pack Hackathon (27-29 November 2026). Devnet only.
 
-**Status on this branch:** the Node security library verifies legacy single-signer SOL transfers with optional compute-budget instructions. Live simulation, fee checks and the one-use wallet handoff are implemented. AI extraction, frontend confirmation, wallet UI, transaction submission and Explorer receipts are product integration goals, not services delivered by this branch. SPL, Token-2022, lookup tables and Anchor are unsupported.
+**Current MVP status:** the integrated application supports Devnet-only legacy single-signer SOL transfers through intent parsing, explicit confirmation, deterministic inspection, live simulation, warning acknowledgement, wallet signing, server-side signed-byte verification, controlled submission, outcome reconciliation and receipt recovery. SPL tokens, Token-2022, lookup tables, Anchor and Mainnet are outside the MVP scope. The CI evidence is automated; real browser-wallet and deployed-HTTPS smoke testing remain separate verification work.
 
 **Try it:** `pnpm install --frozen-lockfile && pnpm build && node packages/security/scripts/demo.mjs match`. No key or wallet connection is required. See the [team handoff](docs/SECURITY_API.md) for API contracts and [hardening notes](docs/SECURITY_REVIEW.md) for known risks.
 
