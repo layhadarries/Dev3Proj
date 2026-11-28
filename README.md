@@ -4,6 +4,10 @@
 
 A transaction can execute successfully and still pay the wrong person. SolGuard checks a Solana Devnet transfer against the recipient and amount you confirmed **before** it reaches your wallet. You can also inspect an unsigned transaction from another app without signing it.
 
+**Live demo (Devnet only):** https://solguard-zettabyte.onrender.com
+
+It needs a wallet set to Devnet with test SOL. The free host sleeps when idle, so the first visit can take a minute. No AI model is attached there: type requests as `send 0.01 SOL to <address>`.
+
 [Workflows](#two-workflows) · [Quick start](#quick-start) · [Demo cases](#reproducible-demonstrations) · [Architecture](#architecture) · [Evidence](#engineering-evidence) · [Documentation](#documentation)
 
 ## Why intent verification matters
