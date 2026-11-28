@@ -12,6 +12,17 @@ Built for the Zettabyte team at the Dev3pack Hackathon (27-29 November 2026). De
 
 **Try it:** `pnpm install --frozen-lockfile && pnpm build && node packages/security/scripts/demo.mjs match`. No key or wallet connection is required. See the [team handoff](docs/SECURITY_API.md) for API contracts and [hardening notes](docs/SECURITY_REVIEW.md) for known risks.
 
+## Built before and during the hackathon
+
+> **Why this section is here:** the [hackathon rules](https://hack.dev3pack.xyz/faq) say that pre-existing code from your own Solana projects is allowed, and ask teams to "be transparent in the README about what was built before vs. during."
+
+The hackathon runs 27-29 November 2026.
+
+- **Before (26 November):** the first README, the project scaffold, a first version of the shared data contracts and security checks, and a first version of the request parser and transaction builder with a script for a local open-weight model.
+- **During (27-29 November):** the Devnet security engine and confirmation step, the adaptation and hardening of the parser and builder, the web app and server, wallet signing, Devnet submission, further tests, CI and documentation.
+
+AI coding assistants were used. The commit history shows the dates.
+
 ---
 
 ## Table of contents
