@@ -17,7 +17,7 @@ const [
   from = "964koDACp6GNSW8uL2J49CTa7kuFSQWPErgKMKK1E9QH",
   to = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
 ] = process.argv.slice(2);
-if (!["match", "extra", "amount", "recipient", "tamper"].includes(scenario))
+if (!["match", "extra", "amount", "recipient", "tamper", "unsupported"].includes(scenario))
   throw Error("Unknown scenario");
 const payer = new PublicKey(from),
   recipient = new PublicKey(to);
@@ -39,6 +39,8 @@ const transfer = SystemProgram.transfer({
 });
 tx.add(transfer);
 if (scenario === "extra") tx.add(transfer);
+// Controlled, unsigned fixture: a non-transfer System instruction is outside the SOL policy.
+if (scenario === "unsupported") tx.add(SystemProgram.allocate({ accountPubkey: payer, space: 0 }));
 const deps = { walletPublicKey: from, network: "devnet" };
 const message = tx.serializeMessage();
 const unsigned = tx.serialize({requireAllSignatures:false, verifySignatures:false});
@@ -62,11 +64,14 @@ const expected = {
   amount: "AMOUNT_MISMATCH",
   recipient: "RECIPIENT_MISMATCH",
   tamper: "TX_MODIFIED",
+  unsupported: "UNSUPPORTED_INSTRUCTION",
 };
 if (
   scenario === "match"
     ? report.verdict !== "PASS"
     : report.verdict !== "BLOCK" ||
-      report.findings[0]?.ruleId !== expected[scenario]
+      report.findings[0]?.ruleId !== expected[scenario] ||
+      (scenario === "unsupported" &&
+        (report.findings[0]?.evidence?.instructionIndex !== 1 || report.simulation !== null))
 )
   process.exitCode = 1;

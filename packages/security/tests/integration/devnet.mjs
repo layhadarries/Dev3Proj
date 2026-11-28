@@ -5,7 +5,7 @@ import { fileURLToPath, URL } from "node:url";
 import process from "node:process";
 import assert from "node:assert/strict";
 
-for (const scenario of ["match", "extra", "recipient", "amount", "tamper"]) {
+for (const scenario of ["match", "extra", "recipient", "amount", "tamper", "unsupported"]) {
   test(`live Devnet demo: ${scenario}`, () => {
     const result = JSON.parse(
       execFileSync(
@@ -21,6 +21,11 @@ for (const scenario of ["match", "extra", "recipient", "amount", "tamper"]) {
       result.report.verdict,
       scenario === "match" ? "PASS" : "BLOCK",
     );
+    if (scenario === "unsupported") {
+      assert.equal(result.report.findings[0]?.ruleId, "UNSUPPORTED_INSTRUCTION");
+      assert.equal(result.report.findings[0]?.evidence?.instructionIndex, 1);
+      assert.equal(result.report.simulation, null);
+    }
     if (scenario === "match") {
       assert.ok(result.report.checkedAtSlot > 0);
       assert.equal(

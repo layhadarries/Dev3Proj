@@ -43,9 +43,10 @@ node packages/security/scripts/demo.mjs extra      # BLOCK EXTRA_TRANSFER
 node packages/security/scripts/demo.mjs recipient  # BLOCK RECIPIENT_MISMATCH
 node packages/security/scripts/demo.mjs amount     # BLOCK AMOUNT_MISMATCH
 node packages/security/scripts/demo.mjs tamper     # BLOCK TX_MODIFIED
+node packages/security/scripts/demo.mjs unsupported # BLOCK UNSUPPORTED_INSTRUCTION
 ```
 
-The output is JSON; point at `verdict` and `findings`.
+The output is JSON; point at `verdict` and `findings`. The `unsupported` scenario appends a non-transfer System Program instruction to an otherwise matching transfer. The engine must return `UNSUPPORTED_INSTRUCTION` at instruction index 1 (the second instruction), before simulation. This is a controlled fixture, not a token-permission inspection or a live submitted transaction.
 
 ## What to say, and what not to claim
 
