@@ -378,7 +378,18 @@ export function TransferApp() {
       {error && <section className="card error" role="alert">{error}</section>}
 
       {/* Keyed by wallet, so that one wallet's input and results are never shown to another. */}
-      {address && <Analyzer key={address} api={api} address={address} onSessionEnd={() => setAddress(undefined)} />}
+      {address && (
+        <Analyzer
+          key={address}
+          api={api}
+          address={address}
+          onSessionEnd={() => {
+            // An open review cannot be signed without a session, so close it too.
+            reset("Your session ended. Connect again.");
+            setAddress(undefined);
+          }}
+        />
+      )}
     </main>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, type Api } from "../lib/client/api";
 import { analyze, describeInstructions, exampleAttack, type Analysis, type Example } from "../lib/client/analyze";
 import { lamportsToSol } from "../lib/client/format";
@@ -22,6 +22,8 @@ export function Analyzer({ api, address, onSessionEnd }: { api: Api; address: st
   const [error, setError] = useState("");
   // Bumped on every edit, so that a late result is never shown beside different input.
   const generation = useRef(0);
+  // Also when this panel goes away, so that an old reply cannot end a newer session.
+  useEffect(() => () => void (generation.current += 1), []);
 
   function change(next: typeof input, isExample: boolean) {
     generation.current += 1;
